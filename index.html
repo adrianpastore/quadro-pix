@@ -1,0 +1,1048 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>Quadro de PIX</title>
+
+<link rel="preconnect" href="https://fonts.googleapis.com" />
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+<link href="https://fonts.googleapis.com/css2?family=Fraunces:wght@500;600&family=IBM+Plex+Mono:wght@400;500&family=Inter:wght@400;500&display=swap" rel="stylesheet" />
+
+<script src="https://cdn.tailwindcss.com"></script>
+
+<style>
+  .font-display { font-family: 'Fraunces', serif; }
+  .font-mono-num { font-family: 'IBM Plex Mono', monospace; }
+  .font-ui { font-family: 'Inter', sans-serif; }
+  body { margin: 0; }
+</style>
+
+<!-- Firebase (compat build: scripts globais, sem precisar de módulos ES) -->
+<script src="https://www.gstatic.com/firebasejs/10.13.0/firebase-app-compat.js"></script>
+<script src="https://www.gstatic.com/firebasejs/10.13.0/firebase-firestore-compat.js"></script>
+<script>
+  const firebaseConfig = {
+    apiKey: "AIzaSyAvDsuRV9WUuujFdQcMlVNYmyku15DPJ4g",
+    authDomain: "quadro-pix.firebaseapp.com",
+    projectId: "quadro-pix",
+    storageBucket: "quadro-pix.firebasestorage.app",
+    messagingSenderId: "696245306802",
+    appId: "1:696245306802:web:12c8861730c9dac255d0ab",
+    measurementId: "G-BRLFNF7ZML"
+  };
+  firebase.initializeApp(firebaseConfig);
+  window.db = firebase.firestore();
+</script>
+
+<!-- React + Babel (transforma o JSX direto no navegador) -->
+<script src="https://unpkg.com/react@18/umd/react.production.min.js" crossorigin></script>
+<script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js" crossorigin></script>
+<script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+</head>
+<body>
+<div id="root"></div>
+
+<script type="text/babel" data-presets="react">
+const { useState, useEffect, useCallback, useRef } = React;
+
+const CARDS_COLLECTION = "cards";
+const SESSION_KEY = "pix-board-session-v1";
+
+const EMPRESAS = [
+  {
+    id: "leao",
+    nome: "Churrascaria Leão do Parque",
+    pin: "1234",
+    classes: {
+      header: "bg-emerald-700",
+      headerText: "text-emerald-50",
+      dot: "bg-emerald-600",
+      card: "bg-emerald-50 border-emerald-300",
+      cardAccent: "text-emerald-800",
+      badge: "bg-emerald-100 text-emerald-800",
+      btn: "bg-emerald-700 hover:bg-emerald-800",
+    },
+  },
+  {
+    id: "pier49",
+    nome: "Restaurante Pier 49",
+    pin: "4321",
+    classes: {
+      header: "bg-sky-700",
+      headerText: "text-sky-50",
+      dot: "bg-sky-600",
+      card: "bg-sky-50 border-sky-300",
+      cardAccent: "text-sky-800",
+      badge: "bg-sky-100 text-sky-800",
+      btn: "bg-sky-700 hover:bg-sky-800",
+    },
+  },
+  {
+    id: "centro",
+    nome: "Padaria Gaúcha Centro",
+    pin: "9874",
+    classes: {
+      header: "bg-amber-700",
+      headerText: "text-amber-50",
+      dot: "bg-amber-600",
+      card: "bg-amber-50 border-amber-300",
+      cardAccent: "text-amber-800",
+      badge: "bg-amber-100 text-amber-800",
+      btn: "bg-amber-700 hover:bg-amber-800",
+    },
+  },
+  {
+    id: "cassino",
+    nome: "Padaria Gaúcha Cassino",
+    pin: "4789",
+    classes: {
+      header: "bg-stone-700",
+      headerText: "text-stone-50",
+      dot: "bg-stone-600",
+      card: "bg-stone-50 border-stone-300",
+      cardAccent: "text-stone-800",
+      badge: "bg-stone-200 text-stone-800",
+      btn: "bg-stone-700 hover:bg-stone-800",
+    },
+  },
+];
+
+const FEITO_COLUMN = {
+  id: "feito",
+  nome: "Feito",
+  classes: {
+    header: "bg-slate-600",
+    headerText: "text-slate-50",
+    dot: "bg-slate-500",
+    card: "bg-slate-50 border-slate-300",
+    cardAccent: "text-slate-700",
+    badge: "bg-slate-200 text-slate-700",
+    btn: "bg-slate-600 hover:bg-slate-700",
+  },
+};
+
+const COLUMNS = [...EMPRESAS, FEITO_COLUMN];
+const CHEFE_PIN = "2707";
+
+function empresaById(id) {
+  return EMPRESAS.find((e) => e.id === id);
+}
+
+function formatMoney(value) {
+  const n = Number(value);
+  if (Number.isNaN(n)) return "R$ 0,00";
+  return n.toLocaleString("pt-BR", { style: "currency", currency: "BRL" });
+}
+
+function formatDate(iso) {
+  const d = new Date(iso);
+  return d.toLocaleString("pt-BR", {
+    day: "2-digit",
+    month: "2-digit",
+    hour: "2-digit",
+    minute: "2-digit",
+  });
+}
+
+function uid() {
+  return Date.now().toString(36) + Math.random().toString(36).slice(2, 8);
+}
+
+function Icon({ name, size = 16, className = "" }) {
+  const p = {
+    width: size,
+    height: size,
+    viewBox: "0 0 24 24",
+    fill: "none",
+    stroke: "currentColor",
+    strokeWidth: 2,
+    strokeLinecap: "round",
+    strokeLinejoin: "round",
+    className,
+  };
+  switch (name) {
+    case "plus":
+      return <svg {...p}><path d="M12 5v14M5 12h14" /></svg>;
+    case "x":
+      return <svg {...p}><path d="M18 6L6 18M6 6l12 12" /></svg>;
+    case "logout":
+      return (
+        <svg {...p}>
+          <path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4" />
+          <polyline points="16 17 21 12 16 7" />
+          <line x1="21" y1="12" x2="9" y2="12" />
+        </svg>
+      );
+    case "copy":
+      return (
+        <svg {...p}>
+          <rect x="9" y="9" width="13" height="13" rx="2" />
+          <path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" />
+        </svg>
+      );
+    case "check":
+      return <svg {...p}><polyline points="20 6 9 17 4 12" /></svg>;
+    case "lock":
+      return (
+        <svg {...p}>
+          <rect x="3" y="11" width="18" height="11" rx="2" />
+          <path d="M7 11V7a5 5 0 0 1 10 0v4" />
+        </svg>
+      );
+    case "arrow-right":
+      return (
+        <svg {...p}>
+          <line x1="5" y1="12" x2="19" y2="12" />
+          <polyline points="12 5 19 12 12 19" />
+        </svg>
+      );
+    case "trash":
+      return (
+        <svg {...p}>
+          <polyline points="3 6 5 6 21 6" />
+          <path d="M19 6l-1 14a2 2 0 0 1-2 2H8a2 2 0 0 1-2-2L5 6" />
+          <path d="M10 11v6M14 11v6" />
+          <path d="M9 6V4a1 1 0 0 1 1-1h4a1 1 0 0 1 1 1v2" />
+        </svg>
+      );
+    case "archive":
+      return (
+        <svg {...p}>
+          <rect x="3" y="3" width="18" height="4" rx="1" />
+          <path d="M5 8v11a1 1 0 0 0 1 1h12a1 1 0 0 0 1-1V8" />
+          <path d="M10 12h4" />
+        </svg>
+      );
+    case "file-text":
+      return (
+        <svg {...p}>
+          <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z" />
+          <polyline points="14 2 14 8 20 8" />
+          <line x1="8" y1="13" x2="16" y2="13" />
+          <line x1="8" y1="17" x2="16" y2="17" />
+        </svg>
+      );
+    case "grid":
+      return (
+        <svg {...p}>
+          <rect x="3" y="3" width="7" height="7" />
+          <rect x="14" y="3" width="7" height="7" />
+          <rect x="3" y="14" width="7" height="7" />
+          <rect x="14" y="14" width="7" height="7" />
+        </svg>
+      );
+    default:
+      return null;
+  }
+}
+
+function loadSession() {
+  try {
+    const raw = localStorage.getItem(SESSION_KEY);
+    return raw ? JSON.parse(raw) : null;
+  } catch (e) {
+    return null;
+  }
+}
+
+function PixBoard() {
+  const [session, setSession] = useState(loadSession);
+  const [cards, setCards] = useState([]);
+  const [loading, setLoading] = useState(true);
+  const [loadError, setLoadError] = useState("");
+  const [selectedRole, setSelectedRole] = useState(null);
+  const [pinInput, setPinInput] = useState("");
+  const [loginError, setLoginError] = useState("");
+  const [openForm, setOpenForm] = useState(null);
+  const [draft, setDraft] = useState({ chavePix: "", favorecido: "", descricao: "", valor: "", comprovante: null });
+  const [formError, setFormError] = useState("");
+  const [copiedId, setCopiedId] = useState(null);
+  const [dragOverCol, setDragOverCol] = useState(null);
+  const [confirmClearFeito, setConfirmClearFeito] = useState(false);
+  const [confirmResetReport, setConfirmResetReport] = useState(false);
+  const [confirmDeleteId, setConfirmDeleteId] = useState(null);
+  const [editingCardId, setEditingCardId] = useState(null);
+  const [editDraft, setEditDraft] = useState({ chavePix: "", favorecido: "", descricao: "", valor: "", comprovante: null });
+  const [editError, setEditError] = useState("");
+  const [page, setPage] = useState("board");
+
+  useEffect(() => {
+    const unsub = window.db.collection(CARDS_COLLECTION).onSnapshot(
+      (snapshot) => {
+        const list = snapshot.docs.map((d) => ({ id: d.id, ...d.data() }));
+        setCards(list);
+        setLoading(false);
+        setLoadError("");
+      },
+      (err) => {
+        console.error(err);
+        setLoadError("Não foi possível sincronizar com o servidor.");
+        setLoading(false);
+      }
+    );
+    return () => unsub();
+  }, []);
+
+  useEffect(() => {
+    try {
+      if (session) localStorage.setItem(SESSION_KEY, JSON.stringify(session));
+      else localStorage.removeItem(SESSION_KEY);
+    } catch (e) {}
+  }, [session]);
+
+  function handleSelectRole(role) {
+    setSelectedRole(role);
+    setPinInput("");
+    setLoginError("");
+  }
+
+  function handleLoginSubmit() {
+    if (!selectedRole) return;
+    if (selectedRole.type === "chefe") {
+      if (pinInput === CHEFE_PIN) {
+        setSession({ type: "chefe" });
+      } else {
+        setLoginError("PIN incorreto.");
+      }
+    } else {
+      const empresa = empresaById(selectedRole.id);
+      if (empresa && pinInput === empresa.pin) {
+        setSession({ type: "empresa", id: empresa.id });
+      } else {
+        setLoginError("PIN incorreto.");
+      }
+    }
+  }
+
+  function handleLogout() {
+    setSession(null);
+    setSelectedRole(null);
+    setPinInput("");
+    setPage("board");
+  }
+
+  function canAddTo(columnId) {
+    if (!session) return false;
+    if (session.type === "chefe") return columnId !== "feito";
+    return session.type === "empresa" && session.id === columnId;
+  }
+
+  function openAddForm(columnId) {
+    setOpenForm(columnId);
+    setDraft({ chavePix: "", favorecido: "", descricao: "", valor: "", comprovante: null });
+    setFormError("");
+  }
+
+  async function submitCard(columnId) {
+    if (!draft.chavePix.trim() || !draft.favorecido.trim() || !draft.valor) {
+      setFormError("Preencha chave PIX, favorecido e valor.");
+      return;
+    }
+    if (draft.comprovante === null) {
+      setFormError("Selecione se precisa de comprovante.");
+      return;
+    }
+    const numeric = Number(String(draft.valor).replace(",", "."));
+    if (Number.isNaN(numeric) || numeric <= 0) {
+      setFormError("Informe um valor válido.");
+      return;
+    }
+    const id = uid();
+    const newCard = {
+      columnId,
+      origemId: columnId,
+      chavePix: draft.chavePix.trim(),
+      favorecido: draft.favorecido.trim(),
+      descricao: draft.descricao.trim(),
+      valor: numeric,
+      precisaComprovante: draft.comprovante === true,
+      createdAt: new Date().toISOString(),
+      archived: false,
+    };
+    try {
+      await window.db.collection(CARDS_COLLECTION).doc(id).set(newCard);
+      setOpenForm(null);
+      setLoadError("");
+    } catch (e) {
+      setFormError("Não foi possível salvar agora. Tente novamente.");
+    }
+  }
+
+  async function moveCard(cardId, targetColumnId) {
+    if (!session || session.type !== "chefe") return;
+    try {
+      await window.db.collection(CARDS_COLLECTION).doc(cardId).update({ columnId: targetColumnId });
+    } catch (e) {
+      setLoadError("Não foi possível mover o card agora.");
+    }
+  }
+
+  async function markAsDone(cardId) {
+    await moveCard(cardId, "feito");
+  }
+
+  async function deleteCard(cardId) {
+    if (!session || session.type !== "chefe") return;
+    try {
+      await window.db.collection(CARDS_COLLECTION).doc(cardId).delete();
+    } catch (e) {
+      setLoadError("Não foi possível excluir agora.");
+    } finally {
+      setConfirmDeleteId(null);
+    }
+  }
+
+  function canEdit(card) {
+    if (!session || card.archived) return false;
+    if (session.type === "chefe") return true;
+    return session.type === "empresa" && session.id === card.origemId && card.columnId === card.origemId;
+  }
+
+  function startEdit(card) {
+    setEditingCardId(card.id);
+    setEditDraft({
+      chavePix: card.chavePix,
+      favorecido: card.favorecido,
+      descricao: card.descricao || "",
+      valor: String(card.valor),
+      comprovante: !!card.precisaComprovante,
+    });
+    setEditError("");
+  }
+
+  function cancelEdit() {
+    setEditingCardId(null);
+    setEditError("");
+  }
+
+  async function submitEdit(cardId) {
+    if (!editDraft.chavePix.trim() || !editDraft.favorecido.trim() || !editDraft.valor) {
+      setEditError("Preencha chave PIX, favorecido e valor.");
+      return;
+    }
+    const numeric = Number(String(editDraft.valor).replace(",", "."));
+    if (Number.isNaN(numeric) || numeric <= 0) {
+      setEditError("Informe um valor válido.");
+      return;
+    }
+    try {
+      await window.db.collection(CARDS_COLLECTION).doc(cardId).update({
+        chavePix: editDraft.chavePix.trim(),
+        favorecido: editDraft.favorecido.trim(),
+        descricao: editDraft.descricao.trim(),
+        valor: numeric,
+        precisaComprovante: editDraft.comprovante === true,
+      });
+      setEditingCardId(null);
+    } catch (e) {
+      setEditError("Não foi possível salvar agora. Tente novamente.");
+    }
+  }
+
+  async function archiveAllDone() {
+    if (!session || session.type !== "chefe") return;
+    try {
+      const batch = window.db.batch();
+      cards
+        .filter((c) => c.columnId === "feito" && !c.archived)
+        .forEach((c) => {
+          batch.update(window.db.collection(CARDS_COLLECTION).doc(c.id), {
+            archived: true,
+            archivedAt: new Date().toISOString(),
+          });
+        });
+      await batch.commit();
+    } catch (e) {
+      setLoadError("Não foi possível arquivar agora.");
+    } finally {
+      setConfirmClearFeito(false);
+    }
+  }
+
+  async function resetAllReports() {
+    if (!session || session.type !== "chefe") return;
+    try {
+      const batch = window.db.batch();
+      cards.forEach((c) => batch.delete(window.db.collection(CARDS_COLLECTION).doc(c.id)));
+      await batch.commit();
+    } catch (e) {
+      setLoadError("Não foi possível zerar agora.");
+    } finally {
+      setConfirmResetReport(false);
+    }
+  }
+
+  function copyPix(id, chave) {
+    navigator.clipboard && navigator.clipboard.writeText(chave);
+    setCopiedId(id);
+    setTimeout(() => setCopiedId((prev) => (prev === id ? null : prev)), 1500);
+  }
+
+  function columnTotal(columnId) {
+    return cards
+      .filter((c) => c.columnId === columnId && !c.archived)
+      .reduce((sum, c) => sum + Number(c.valor || 0), 0);
+  }
+
+  if (loading) {
+    return (
+      <div className="font-ui w-full min-h-screen bg-neutral-50 flex items-center justify-center">
+        <p className="text-neutral-400 text-sm">Carregando...</p>
+      </div>
+    );
+  }
+
+  if (!session) {
+    return (
+      <div className="font-ui w-full min-h-screen bg-neutral-50 flex items-center justify-center p-6">
+        <div className="w-full max-w-md">
+          <h1 className="font-display text-3xl text-neutral-900 mb-1 text-center">Quadro de PIX</h1>
+          <p className="text-neutral-500 text-sm text-center mb-8">Controle de pagamentos por estabelecimento</p>
+
+          {!selectedRole ? (
+            <div className="grid grid-cols-1 gap-2">
+              {EMPRESAS.map((e) => (
+                <button
+                  key={e.id}
+                  onClick={() => handleSelectRole({ type: "empresa", id: e.id })}
+                  className="flex items-center gap-3 bg-white border border-neutral-200 rounded-lg px-4 py-3 text-left hover:border-neutral-400 transition-colors"
+                >
+                  <span className={`w-3 h-3 rounded-full ${e.classes.dot}`} />
+                  <span className="text-neutral-800 font-medium">{e.nome}</span>
+                </button>
+              ))}
+              <button
+                onClick={() => handleSelectRole({ type: "chefe" })}
+                className="flex items-center gap-3 bg-neutral-900 rounded-lg px-4 py-3 text-left hover:bg-neutral-800 transition-colors mt-2"
+              >
+                <Icon name="lock" size={16} className="text-neutral-300" />
+                <span className="text-white font-medium">Entrar como chefe</span>
+              </button>
+            </div>
+          ) : (
+            <div className="bg-white border border-neutral-200 rounded-lg p-5">
+              <p className="text-sm text-neutral-500 mb-3">
+                {selectedRole.type === "chefe" ? "Chefe" : empresaById(selectedRole.id).nome}
+              </p>
+              <label className="block text-sm text-neutral-700 mb-1">PIN</label>
+              <input
+                type="tel"
+                inputMode="numeric"
+                pattern="[0-9]*"
+                autoComplete="off"
+                maxLength={8}
+                value={pinInput}
+                onChange={(ev) => setPinInput(ev.target.value.replace(/[^0-9]/g, ""))}
+                onKeyDown={(ev) => {
+                  if (ev.key === "Enter") handleLoginSubmit();
+                }}
+                className="w-full border border-neutral-300 rounded-md px-3 py-2 mb-2 tracking-widest text-lg font-mono-num"
+                placeholder="Digite o PIN"
+              />
+              {loginError && <p className="text-sm text-red-600 mb-2">{loginError}</p>}
+              <div className="flex gap-2 mt-3">
+                <button
+                  type="button"
+                  onClick={() => setSelectedRole(null)}
+                  className="flex-1 border border-neutral-300 rounded-md py-2 text-neutral-700 hover:bg-neutral-50"
+                >
+                  Voltar
+                </button>
+                <button
+                  type="button"
+                  onClick={handleLoginSubmit}
+                  className="flex-1 bg-neutral-900 text-white rounded-md py-2 hover:bg-neutral-800 flex items-center justify-center gap-1"
+                >
+                  Entrar <Icon name="arrow-right" size={16} />
+                </button>
+              </div>
+            </div>
+          )}
+        </div>
+      </div>
+    );
+  }
+
+  return (
+    <div className="font-ui w-full min-h-screen bg-neutral-50 p-4">
+      <div className="flex items-center justify-between mb-3 px-1">
+        <div>
+          <h1 className="font-display text-2xl text-neutral-900">Quadro de PIX</h1>
+          <p className="text-sm text-neutral-500">
+            {session.type === "chefe" ? "Você está como chefe" : `Você está em ${empresaById(session.id).nome}`}
+          </p>
+        </div>
+        <button
+          onClick={handleLogout}
+          className="flex items-center gap-1 text-sm text-neutral-600 border border-neutral-300 rounded-md px-3 py-1.5 hover:bg-white"
+        >
+          <Icon name="logout" size={14} /> Sair
+        </button>
+      </div>
+
+      <div className="flex gap-2 mb-4 px-1">
+        <button
+          onClick={() => setPage("board")}
+          className={`flex items-center gap-1.5 text-sm rounded-md px-3 py-1.5 ${
+            page === "board" ? "bg-neutral-900 text-white" : "bg-white border border-neutral-300 text-neutral-600"
+          }`}
+        >
+          <Icon name="grid" size={14} /> Quadro
+        </button>
+        {session.type === "chefe" && (
+          <button
+            onClick={() => setPage("report")}
+            className={`flex items-center gap-1.5 text-sm rounded-md px-3 py-1.5 ${
+              page === "report" ? "bg-neutral-900 text-white" : "bg-white border border-neutral-300 text-neutral-600"
+            }`}
+          >
+            <Icon name="file-text" size={14} /> Relatório
+          </button>
+        )}
+      </div>
+
+      {loadError && (
+        <div className="mb-3 mx-1 text-sm text-red-700 bg-red-50 border border-red-200 rounded-md px-3 py-2">
+          {loadError}
+        </div>
+      )}
+
+      {page === "board" && (
+        <div className="flex gap-3 overflow-x-auto pb-2">
+          {COLUMNS.map((col) => {
+            const colCards = cards.filter((c) => c.columnId === col.id && !c.archived);
+            const isDropTarget = session.type === "chefe" && col.id === "feito";
+            return (
+              <div
+                key={col.id}
+                className={`flex-shrink-0 w-72 rounded-lg border ${
+                  dragOverCol === col.id ? "border-neutral-400" : "border-neutral-200"
+                } bg-white flex flex-col max-h-[75vh]`}
+                onDragOver={(e) => {
+                  if (isDropTarget) {
+                    e.preventDefault();
+                    setDragOverCol(col.id);
+                  }
+                }}
+                onDragLeave={() => setDragOverCol((prev) => (prev === col.id ? null : prev))}
+                onDrop={(e) => {
+                  e.preventDefault();
+                  setDragOverCol(null);
+                  if (!isDropTarget) return;
+                  const cardId = e.dataTransfer.getData("text/plain");
+                  if (cardId) moveCard(cardId, col.id);
+                }}
+              >
+                <div className={`${col.classes.header} ${col.classes.headerText} rounded-t-lg px-3 py-2.5 flex items-center justify-between`}>
+                  <div>
+                    <p className="font-medium text-sm leading-tight">{col.nome}</p>
+                    <p className="text-xs opacity-80 font-mono-num">
+                      {formatMoney(columnTotal(col.id))} · {colCards.length} PIX
+                    </p>
+                  </div>
+                  {canAddTo(col.id) && (
+                    <button
+                      onClick={() => openAddForm(col.id)}
+                      aria-label={`Adicionar PIX em ${col.nome}`}
+                      className="bg-white/15 hover:bg-white/25 rounded-md p-1.5"
+                    >
+                      <Icon name="plus" size={16} />
+                    </button>
+                  )}
+                  {col.id === "feito" && session.type === "chefe" && colCards.length > 0 && (
+                    <button
+                      onClick={() => setConfirmClearFeito(true)}
+                      aria-label="Arquivar todos os feitos"
+                      className="bg-white/15 hover:bg-white/25 rounded-md p-1.5"
+                    >
+                      <Icon name="archive" size={16} />
+                    </button>
+                  )}
+                </div>
+
+                <div className="flex-1 overflow-y-auto p-2 flex flex-col gap-2">
+                  {openForm === col.id && (
+                    <div className="border border-neutral-300 rounded-md p-2.5 bg-neutral-50">
+                      <div className="flex justify-between items-center mb-2">
+                        <p className="text-xs font-medium text-neutral-600">Novo PIX</p>
+                        <button onClick={() => setOpenForm(null)} aria-label="Cancelar">
+                          <Icon name="x" size={14} className="text-neutral-500" />
+                        </button>
+                      </div>
+                      <input
+                        placeholder="Chave PIX"
+                        value={draft.chavePix}
+                        onChange={(e) => setDraft({ ...draft, chavePix: e.target.value })}
+                        className="w-full text-sm border border-neutral-300 rounded px-2 py-1.5 mb-1.5"
+                      />
+                      <input
+                        placeholder="Favorecido"
+                        value={draft.favorecido}
+                        onChange={(e) => setDraft({ ...draft, favorecido: e.target.value })}
+                        className="w-full text-sm border border-neutral-300 rounded px-2 py-1.5 mb-1.5"
+                      />
+                      <input
+                        placeholder="Descrição"
+                        value={draft.descricao}
+                        onChange={(e) => setDraft({ ...draft, descricao: e.target.value })}
+                        className="w-full text-sm border border-neutral-300 rounded px-2 py-1.5 mb-1.5"
+                      />
+                      <input
+                        placeholder="Valor (ex: 150,00)"
+                        inputMode="decimal"
+                        value={draft.valor}
+                        onChange={(e) => setDraft({ ...draft, valor: e.target.value })}
+                        className="w-full text-sm border border-neutral-300 rounded px-2 py-1.5 mb-1.5 font-mono-num"
+                      />
+                      <p className="text-xs text-neutral-500 mb-1">Comprovante</p>
+                      <div className="flex gap-1.5 mb-1.5">
+                        <button
+                          type="button"
+                          onClick={() => setDraft({ ...draft, comprovante: true })}
+                          className={`flex-1 text-sm rounded px-2 py-1.5 border ${
+                            draft.comprovante === true
+                              ? "bg-neutral-900 text-white border-neutral-900"
+                              : "bg-white text-neutral-600 border-neutral-300"
+                          }`}
+                        >
+                          Sim
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => setDraft({ ...draft, comprovante: false })}
+                          className={`flex-1 text-sm rounded px-2 py-1.5 border ${
+                            draft.comprovante === false
+                              ? "bg-neutral-900 text-white border-neutral-900"
+                              : "bg-white text-neutral-600 border-neutral-300"
+                          }`}
+                        >
+                          Não
+                        </button>
+                      </div>
+                      {formError && <p className="text-xs text-red-600 mb-1.5">{formError}</p>}
+                      <button
+                        onClick={() => submitCard(col.id)}
+                        className={`w-full text-white text-sm rounded py-1.5 ${col.classes.btn}`}
+                      >
+                        Adicionar
+                      </button>
+                    </div>
+                  )}
+
+                  {colCards.length === 0 && openForm !== col.id && (
+                    <p className="text-xs text-neutral-400 text-center py-6">Nenhum PIX ainda.</p>
+                  )}
+
+                  {colCards.map((card) => {
+                    const origem = empresaById(card.origemId);
+                    const isEditing = editingCardId === card.id;
+                    return (
+                      <div
+                        key={card.id}
+                        draggable={!isEditing && session.type === "chefe" && card.columnId !== "feito"}
+                        onDragStart={(e) => e.dataTransfer.setData("text/plain", card.id)}
+                        className={`border rounded-md p-2.5 ${col.classes.card} ${
+                          !isEditing && session.type === "chefe" && card.columnId !== "feito" ? "cursor-grab active:cursor-grabbing" : ""
+                        }`}
+                      >
+                        {isEditing ? (
+                          <div>
+                            <p className="text-xs font-medium text-neutral-600 mb-2">Editar PIX</p>
+                            <input
+                              placeholder="Chave PIX"
+                              value={editDraft.chavePix}
+                              onChange={(e) => setEditDraft({ ...editDraft, chavePix: e.target.value })}
+                              className="w-full text-sm border border-neutral-300 rounded px-2 py-1.5 mb-1.5"
+                            />
+                            <input
+                              placeholder="Favorecido"
+                              value={editDraft.favorecido}
+                              onChange={(e) => setEditDraft({ ...editDraft, favorecido: e.target.value })}
+                              className="w-full text-sm border border-neutral-300 rounded px-2 py-1.5 mb-1.5"
+                            />
+                            <input
+                              placeholder="Descrição"
+                              value={editDraft.descricao}
+                              onChange={(e) => setEditDraft({ ...editDraft, descricao: e.target.value })}
+                              className="w-full text-sm border border-neutral-300 rounded px-2 py-1.5 mb-1.5"
+                            />
+                            <input
+                              placeholder="Valor (ex: 150,00)"
+                              inputMode="decimal"
+                              value={editDraft.valor}
+                              onChange={(e) => setEditDraft({ ...editDraft, valor: e.target.value })}
+                              className="w-full text-sm border border-neutral-300 rounded px-2 py-1.5 mb-1.5 font-mono-num"
+                            />
+                            <p className="text-xs text-neutral-500 mb-1">Comprovante</p>
+                            <div className="flex gap-1.5 mb-1.5">
+                              <button
+                                type="button"
+                                onClick={() => setEditDraft({ ...editDraft, comprovante: true })}
+                                className={`flex-1 text-sm rounded px-2 py-1.5 border ${
+                                  editDraft.comprovante === true
+                                    ? "bg-neutral-900 text-white border-neutral-900"
+                                    : "bg-white text-neutral-600 border-neutral-300"
+                                }`}
+                              >
+                                Sim
+                              </button>
+                              <button
+                                type="button"
+                                onClick={() => setEditDraft({ ...editDraft, comprovante: false })}
+                                className={`flex-1 text-sm rounded px-2 py-1.5 border ${
+                                  editDraft.comprovante === false
+                                    ? "bg-neutral-900 text-white border-neutral-900"
+                                    : "bg-white text-neutral-600 border-neutral-300"
+                                }`}
+                              >
+                                Não
+                              </button>
+                            </div>
+                            {editError && <p className="text-xs text-red-600 mb-1.5">{editError}</p>}
+                            <div className="flex gap-1.5">
+                              <button
+                                onClick={cancelEdit}
+                                className="flex-1 border border-neutral-300 rounded py-1.5 text-sm text-neutral-600"
+                              >
+                                Cancelar
+                              </button>
+                              <button
+                                onClick={() => submitEdit(card.id)}
+                                className={`flex-1 text-white text-sm rounded py-1.5 ${col.classes.btn}`}
+                              >
+                                Salvar
+                              </button>
+                            </div>
+                          </div>
+                        ) : (
+                          <>
+                            <div className="flex justify-between items-start mb-1">
+                              <span className={`text-[11px] px-1.5 py-0.5 rounded ${origem ? origem.classes.badge : col.classes.badge}`}>
+                                {origem ? origem.nome.split(" ")[0] : "Feito"}
+                              </span>
+                              <span className="text-[11px] text-neutral-400 font-mono-num">{formatDate(card.createdAt)}</span>
+                            </div>
+                            <p className="font-medium text-sm text-neutral-900">{card.favorecido}</p>
+                            {card.descricao && <p className="text-xs text-neutral-500 mb-1">{card.descricao}</p>}
+                            {card.precisaComprovante && (
+                              <p className="text-[11px] text-red-700 font-medium mb-1">Precisa de comprovante</p>
+                            )}
+                            <div className="flex items-start justify-between gap-2 mt-1">
+                              <p className="text-sm text-neutral-500 min-w-0">
+                                Chave Pix:{" "}
+                                <span className="font-mono-num text-lg font-bold text-neutral-900 break-all">{card.chavePix}</span>
+                              </p>
+                              <button
+                                onClick={() => copyPix(card.id, card.chavePix)}
+                                aria-label="Copiar chave Pix"
+                                className="flex-shrink-0 mt-0.5 text-neutral-400 hover:text-neutral-700"
+                              >
+                                {copiedId === card.id ? <Icon name="check" size={14} /> : <Icon name="copy" size={14} />}
+                              </button>
+                            </div>
+                            <p className={`font-mono-num text-lg font-medium ${col.classes.cardAccent} mt-1`}>{formatMoney(card.valor)}</p>
+                            <div className="flex items-center justify-end gap-3 mt-1.5">
+                              {canEdit(card) && (
+                                <button
+                                  onClick={() => startEdit(card)}
+                                  className="text-[11px] text-neutral-500 hover:text-neutral-800 font-medium"
+                                >
+                                  Editar
+                                </button>
+                              )}
+                              {session.type === "chefe" && (
+                                <button onClick={() => setConfirmDeleteId(card.id)} aria-label="Excluir card">
+                                  <Icon name="trash" size={13} className="text-neutral-400 hover:text-red-600" />
+                                </button>
+                              )}
+                            </div>
+                            {session.type === "chefe" && card.columnId !== "feito" && (
+                              <button
+                                onClick={() => markAsDone(card.id)}
+                                className={`w-full mt-2 text-white text-xs font-medium rounded py-1.5 ${FEITO_COLUMN.classes.btn}`}
+                              >
+                                Marcar como Feito
+                              </button>
+                            )}
+                            {session.type === "chefe" && card.columnId === "feito" && origem && (
+                              <button
+                                onClick={() => moveCard(card.id, card.origemId)}
+                                className={`w-full mt-2 text-xs font-medium rounded py-1.5 border ${origem.classes.badge}`}
+                              >
+                                Devolver para {origem.nome.split(" ")[0]}
+                              </button>
+                            )}
+                          </>
+                        )}
+                      </div>
+                    );
+                  })}
+                </div>
+              </div>
+            );
+          })}
+        </div>
+      )}
+
+      {page === "report" && session.type === "chefe" && (
+        <div className="pb-4">
+          {(() => {
+            const relevantEmpresas = EMPRESAS;
+            const relevantCards = cards
+              .filter((c) => relevantEmpresas.some((e) => e.id === c.origemId))
+              .sort((a, b) => new Date(b.createdAt) - new Date(a.createdAt));
+            const grandTotal = relevantCards.reduce((sum, c) => sum + Number(c.valor || 0), 0);
+
+            function statusLabel(card) {
+              if (card.archived) return { text: "Arquivado", className: "bg-neutral-200 text-neutral-600" };
+              if (card.columnId === "feito") return { text: "Feito", className: "bg-slate-200 text-slate-700" };
+              return { text: "Pendente", className: "bg-amber-100 text-amber-800" };
+            }
+
+            return (
+              <>
+                <div className="grid grid-cols-2 sm:grid-cols-4 gap-2 mb-4">
+                  {relevantEmpresas.map((emp) => {
+                    const empCards = relevantCards.filter((c) => c.origemId === emp.id);
+                    const empTotal = empCards.reduce((sum, c) => sum + Number(c.valor || 0), 0);
+                    return (
+                      <div key={emp.id} className="bg-white border border-neutral-200 rounded-lg p-3">
+                        <div className="flex items-center gap-1.5 mb-1">
+                          <span className={`w-2 h-2 rounded-full ${emp.classes.dot}`} />
+                          <p className="text-xs text-neutral-500 leading-tight">{emp.nome}</p>
+                        </div>
+                        <p className="font-mono-num text-lg font-medium text-neutral-900">{formatMoney(empTotal)}</p>
+                        <p className="text-[11px] text-neutral-400">{empCards.length} PIX</p>
+                      </div>
+                    );
+                  })}
+                  <div className="bg-neutral-900 rounded-lg p-3">
+                    <p className="text-xs text-neutral-300 mb-1">Total geral</p>
+                    <p className="font-mono-num text-lg font-medium text-white">{formatMoney(grandTotal)}</p>
+                    <p className="text-[11px] text-neutral-400">{relevantCards.length} PIX</p>
+                  </div>
+                </div>
+
+                <div className="bg-white border border-neutral-200 rounded-lg overflow-hidden">
+                  {relevantCards.length === 0 && (
+                    <p className="text-sm text-neutral-400 text-center py-10">Nenhum PIX registrado ainda.</p>
+                  )}
+                  {relevantCards.map((card) => {
+                    const origem = empresaById(card.origemId);
+                    const status = statusLabel(card);
+                    return (
+                      <div key={card.id} className="flex items-center justify-between gap-3 px-4 py-2.5 border-b border-neutral-100 last:border-0">
+                        <div className="min-w-0">
+                          <div className="flex items-center gap-1.5 mb-0.5">
+                            {origem && <span className={`w-1.5 h-1.5 rounded-full ${origem.classes.dot}`} />}
+                            <p className="text-sm font-medium text-neutral-900 truncate">{card.favorecido}</p>
+                          </div>
+                          <p className="text-[11px] text-neutral-400">
+                            {origem ? origem.nome : ""} · {formatDate(card.createdAt)}
+                            {card.descricao ? ` · ${card.descricao}` : ""}
+                          </p>
+                        </div>
+                        <div className="flex items-center gap-2 flex-shrink-0">
+                          <span className={`text-[11px] px-1.5 py-0.5 rounded ${status.className}`}>{status.text}</span>
+                          <span className="font-mono-num text-sm font-medium text-neutral-900">{formatMoney(card.valor)}</span>
+                        </div>
+                      </div>
+                    );
+                  })}
+                </div>
+              </>
+            );
+          })()}
+        </div>
+      )}
+
+      {page === "report" && session.type === "chefe" && (
+        <button
+          onClick={() => setConfirmResetReport(true)}
+          className="fixed bottom-5 right-5 flex items-center gap-1.5 bg-red-600 hover:bg-red-700 text-white text-sm font-medium rounded-full px-4 py-2.5 shadow-lg z-40"
+        >
+          <Icon name="trash" size={14} /> Zerar relatórios
+        </button>
+      )}
+
+      {confirmDeleteId && (
+        <div className="fixed inset-0 bg-black/40 flex items-center justify-center p-4 z-50">
+          <div className="bg-white rounded-lg p-5 max-w-sm w-full">
+            <h2 className="font-display text-lg text-neutral-900 mb-1">Excluir este PIX?</h2>
+            <p className="text-sm text-neutral-500 mb-4">Essa ação apaga o card de vez. Não tem como desfazer.</p>
+            <div className="flex gap-2">
+              <button
+                onClick={() => setConfirmDeleteId(null)}
+                className="flex-1 border border-neutral-300 rounded-md py-2 text-neutral-700 hover:bg-neutral-50"
+              >
+                Cancelar
+              </button>
+              <button
+                onClick={() => deleteCard(confirmDeleteId)}
+                className="flex-1 bg-red-600 text-white rounded-md py-2 hover:bg-red-700"
+              >
+                Excluir
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {confirmResetReport && (
+        <div className="fixed inset-0 bg-black/40 flex items-center justify-center p-4 z-50">
+          <div className="bg-white rounded-lg p-5 max-w-sm w-full">
+            <h2 className="font-display text-lg text-neutral-900 mb-1">Zerar todos os relatórios?</h2>
+            <p className="text-sm text-neutral-500 mb-4">
+              Isso apaga TODOS os PIX de todos os estabelecimentos (pendentes, feitos e arquivados) pra sempre. Não tem como desfazer.
+            </p>
+            <div className="flex gap-2">
+              <button
+                onClick={() => setConfirmResetReport(false)}
+                className="flex-1 border border-neutral-300 rounded-md py-2 text-neutral-700 hover:bg-neutral-50"
+              >
+                Cancelar
+              </button>
+              <button
+                onClick={resetAllReports}
+                className="flex-1 bg-red-600 text-white rounded-md py-2 hover:bg-red-700"
+              >
+                Zerar tudo
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {confirmClearFeito && (
+        <div className="fixed inset-0 bg-black/40 flex items-center justify-center p-4 z-50">
+          <div className="bg-white rounded-lg p-5 max-w-sm w-full">
+            <h2 className="font-display text-lg text-neutral-900 mb-1">Arquivar todos os feitos?</h2>
+            <p className="text-sm text-neutral-500 mb-4">
+              Eles saem do quadro, mas continuam guardados no Relatório/Histórico.
+            </p>
+            <div className="flex gap-2">
+              <button
+                onClick={() => setConfirmClearFeito(false)}
+                className="flex-1 border border-neutral-300 rounded-md py-2 text-neutral-700 hover:bg-neutral-50"
+              >
+                Cancelar
+              </button>
+              <button
+                onClick={archiveAllDone}
+                className="flex-1 bg-neutral-900 text-white rounded-md py-2 hover:bg-neutral-800"
+              >
+                Arquivar todos
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
+ReactDOM.createRoot(document.getElementById("root")).render(<PixBoard />);
+</script>
+</body>
+</html>
