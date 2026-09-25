@@ -47,6 +47,7 @@
 const { useState, useEffect, useCallback, useRef } = React;
 
 const CARDS_COLLECTION = "cards";
+const ACTIVITY_COLLECTION = "audit_log";
 const SESSION_KEY = "pix-board-session-v1";
 
 const EMPRESAS = [
@@ -232,6 +233,20 @@ function Icon({ name, size = 16, className = "" }) {
           <rect x="14" y="14" width="7" height="7" />
         </svg>
       );
+    case "search":
+      return (
+        <svg {...p}>
+          <circle cx="11" cy="11" r="7" />
+          <line x1="21" y1="21" x2="16.65" y2="16.65" />
+        </svg>
+      );
+    case "clock":
+      return (
+        <svg {...p}>
+          <circle cx="12" cy="12" r="9" />
+          <polyline points="12 7 12 12 15.5 14" />
+        </svg>
+      );
     default:
       return null;
   }
@@ -266,6 +281,9 @@ function PixBoard() {
   const [editDraft, setEditDraft] = useState({ chavePix: "", favorecido: "", descricao: "", valor: "", comprovante: null });
   const [editError, setEditError] = useState("");
   const [page, setPage] = useState("board");
+  const [searchQuery, setSearchQuery] = useState("");
+  const [reportPeriod, setReportPeriod] = useState("all");
+  const [activities, setActivities] = useState([]);
 
   useEffect(() => {
     const unsub = window.db.collection(CARDS_COLLECTION).onSnapshot(
@@ -283,6 +301,41 @@ function PixBoard() {
     );
     return () => unsub();
   }, []);
+
+  useEffect(() => {
+    if (!session || session.type !== "chefe") return;
+    const unsub = window.db
+      .collection(ACTIVITY_COLLECTION)
+      .orderBy("em", "desc")
+      .limit(200)
+      .onSnapshot(
+        (snapshot) => {
+          setActivities(snapshot.docs.map((d) => ({ id: d.id, ...d.data() })));
+        },
+        (err) => console.error(err)
+      );
+    return () => unsub();
+  }, [session]);
+
+  function atorAtual() {
+    if (!session) return "Desconhecido";
+    if (session.type === "chefe") return "Chefe";
+    const emp = empresaById(session.id);
+    return emp ? emp.nome : "Desconhecido";
+  }
+
+  async function logActivity(acao, detalhe) {
+    try {
+      await window.db.collection(ACTIVITY_COLLECTION).add({
+        acao,
+        ator: atorAtual(),
+        detalhe,
+        em: new Date().toISOString(),
+      });
+    } catch (e) {
+      console.error("Falha ao registrar atividade", e);
+    }
+  }
 
   useEffect(() => {
     try {
@@ -364,6 +417,7 @@ function PixBoard() {
       await window.db.collection(CARDS_COLLECTION).doc(id).set(newCard);
       setOpenForm(null);
       setLoadError("");
+      logActivity("criar", `Novo PIX para ${newCard.favorecido} · ${formatMoney(newCard.valor)}`);
     } catch (e) {
       setFormError("Não foi possível salvar agora. Tente novamente.");
     }
@@ -371,8 +425,23 @@ function PixBoard() {
 
   async function moveCard(cardId, targetColumnId) {
     if (!session || session.type !== "chefe") return;
+    const card = cards.find((c) => c.id === cardId);
+    const update = { columnId: targetColumnId };
+    if (targetColumnId === "feito") {
+      update.pagoEm = new Date().toISOString();
+    } else {
+      update.pagoEm = null;
+    }
     try {
-      await window.db.collection(CARDS_COLLECTION).doc(cardId).update({ columnId: targetColumnId });
+      await window.db.collection(CARDS_COLLECTION).doc(cardId).update(update);
+      if (card) {
+        if (targetColumnId === "feito") {
+          logActivity("concluir", `Marcou como feito o PIX de ${card.favorecido} · ${formatMoney(card.valor)}`);
+        } else {
+          const destino = empresaById(targetColumnId);
+          logActivity("devolver", `Devolveu para ${destino ? destino.nome : targetColumnId} o PIX de ${card.favorecido}`);
+        }
+      }
     } catch (e) {
       setLoadError("Não foi possível mover o card agora.");
     }
@@ -384,8 +453,12 @@ function PixBoard() {
 
   async function deleteCard(cardId) {
     if (!session || session.type !== "chefe") return;
+    const card = cards.find((c) => c.id === cardId);
     try {
       await window.db.collection(CARDS_COLLECTION).doc(cardId).delete();
+      if (card) {
+        logActivity("excluir", `Excluiu o PIX de ${card.favorecido} · ${formatMoney(card.valor)}`);
+      }
     } catch (e) {
       setLoadError("Não foi possível excluir agora.");
     } finally {
@@ -435,6 +508,7 @@ function PixBoard() {
         precisaComprovante: editDraft.comprovante === true,
       });
       setEditingCardId(null);
+      logActivity("editar", `Editou o PIX de ${editDraft.favorecido.trim()} · ${formatMoney(numeric)}`);
     } catch (e) {
       setEditError("Não foi possível salvar agora. Tente novamente.");
     }
@@ -444,15 +518,15 @@ function PixBoard() {
     if (!session || session.type !== "chefe") return;
     try {
       const batch = window.db.batch();
-      cards
-        .filter((c) => c.columnId === "feito" && !c.archived)
-        .forEach((c) => {
-          batch.update(window.db.collection(CARDS_COLLECTION).doc(c.id), {
-            archived: true,
-            archivedAt: new Date().toISOString(),
-          });
+      const alvo = cards.filter((c) => c.columnId === "feito" && !c.archived);
+      alvo.forEach((c) => {
+        batch.update(window.db.collection(CARDS_COLLECTION).doc(c.id), {
+          archived: true,
+          archivedAt: new Date().toISOString(),
         });
+      });
       await batch.commit();
+      if (alvo.length > 0) logActivity("arquivar", `Arquivou ${alvo.length} PIX concluídos`);
     } catch (e) {
       setLoadError("Não foi possível arquivar agora.");
     } finally {
@@ -466,6 +540,7 @@ function PixBoard() {
       const batch = window.db.batch();
       cards.forEach((c) => batch.delete(window.db.collection(CARDS_COLLECTION).doc(c.id)));
       await batch.commit();
+      if (cards.length > 0) logActivity("zerar", `Zerou todos os relatórios (${cards.length} PIX apagados)`);
     } catch (e) {
       setLoadError("Não foi possível zerar agora.");
     } finally {
@@ -483,6 +558,52 @@ function PixBoard() {
     return cards
       .filter((c) => c.columnId === columnId && !c.archived)
       .reduce((sum, c) => sum + Number(c.valor || 0), 0);
+  }
+
+  function matchesSearch(card) {
+    const q = searchQuery.trim().toLowerCase();
+    if (!q) return true;
+    return (
+      (card.favorecido || "").toLowerCase().includes(q) ||
+      (card.chavePix || "").toLowerCase().includes(q) ||
+      (card.descricao || "").toLowerCase().includes(q)
+    );
+  }
+
+  function periodCutoff() {
+    const now = new Date();
+    if (reportPeriod === "week") {
+      const d = new Date(now);
+      d.setDate(d.getDate() - 7);
+      return d;
+    }
+    if (reportPeriod === "month") {
+      const d = new Date(now);
+      d.setDate(d.getDate() - 30);
+      return d;
+    }
+    return null;
+  }
+
+  function activityIcon(acao) {
+    switch (acao) {
+      case "criar":
+        return "plus";
+      case "editar":
+        return "file-text";
+      case "concluir":
+        return "check";
+      case "devolver":
+        return "arrow-right";
+      case "excluir":
+        return "trash";
+      case "arquivar":
+        return "archive";
+      case "zerar":
+        return "trash";
+      default:
+        return "file-text";
+    }
   }
 
   if (loading) {
@@ -581,7 +702,7 @@ function PixBoard() {
         </button>
       </div>
 
-      <div className="flex gap-2 mb-4 px-1">
+      <div className="flex flex-wrap items-center gap-2 mb-4 px-1">
         <button
           onClick={() => setPage("board")}
           className={`flex items-center gap-1.5 text-sm rounded-md px-3 py-1.5 ${
@@ -600,6 +721,27 @@ function PixBoard() {
             <Icon name="file-text" size={14} /> Relatório
           </button>
         )}
+        {session.type === "chefe" && (
+          <button
+            onClick={() => setPage("activities")}
+            className={`flex items-center gap-1.5 text-sm rounded-md px-3 py-1.5 ${
+              page === "activities" ? "bg-neutral-900 text-white" : "bg-white border border-neutral-300 text-neutral-600"
+            }`}
+          >
+            <Icon name="clock" size={14} /> Atividades
+          </button>
+        )}
+        {page === "board" && (
+          <div className="relative ml-auto w-full sm:w-64">
+            <Icon name="search" size={14} className="absolute left-2.5 top-1/2 -translate-y-1/2 text-neutral-400" />
+            <input
+              value={searchQuery}
+              onChange={(e) => setSearchQuery(e.target.value)}
+              placeholder="Buscar favorecido ou chave PIX"
+              className="w-full text-sm border border-neutral-300 rounded-md pl-8 pr-2.5 py-1.5 bg-white"
+            />
+          </div>
+        )}
       </div>
 
       {loadError && (
@@ -611,7 +753,7 @@ function PixBoard() {
       {page === "board" && (
         <div className="flex gap-3 overflow-x-auto pb-2">
           {COLUMNS.map((col) => {
-            const colCards = cards.filter((c) => c.columnId === col.id && !c.archived);
+            const colCards = cards.filter((c) => c.columnId === col.id && !c.archived && matchesSearch(c));
             const isDropTarget = session.type === "chefe" && col.id === "feito";
             return (
               <div
@@ -825,6 +967,9 @@ function PixBoard() {
                             </div>
                             <p className="font-medium text-sm text-neutral-900">{card.favorecido}</p>
                             {card.descricao && <p className="text-xs text-neutral-500 mb-1">{card.descricao}</p>}
+                            {card.columnId === "feito" && card.pagoEm && (
+                              <p className="text-[11px] text-slate-600 mb-1">PIX enviado em {formatDate(card.pagoEm)}</p>
+                            )}
                             {card.precisaComprovante && (
                               <p className="text-[11px] text-red-700 font-medium mb-1">Precisa de comprovante</p>
                             )}
@@ -889,8 +1034,11 @@ function PixBoard() {
         <div className="pb-4">
           {(() => {
             const relevantEmpresas = EMPRESAS;
+            const cutoff = periodCutoff();
             const relevantCards = cards
               .filter((c) => relevantEmpresas.some((e) => e.id === c.origemId))
+              .filter((c) => !cutoff || new Date(c.createdAt) >= cutoff)
+              .filter(matchesSearch)
               .sort((a, b) => new Date(b.createdAt) - new Date(a.createdAt));
             const grandTotal = relevantCards.reduce((sum, c) => sum + Number(c.valor || 0), 0);
 
@@ -902,6 +1050,37 @@ function PixBoard() {
 
             return (
               <>
+                <div className="flex flex-wrap items-center gap-2 mb-3">
+                  <div className="flex gap-1.5">
+                    {[
+                      { id: "all", label: "Tudo" },
+                      { id: "week", label: "Última semana" },
+                      { id: "month", label: "Últimos 30 dias" },
+                    ].map((opt) => (
+                      <button
+                        key={opt.id}
+                        onClick={() => setReportPeriod(opt.id)}
+                        className={`text-xs rounded-md px-2.5 py-1.5 border ${
+                          reportPeriod === opt.id
+                            ? "bg-neutral-900 text-white border-neutral-900"
+                            : "bg-white text-neutral-600 border-neutral-300"
+                        }`}
+                      >
+                        {opt.label}
+                      </button>
+                    ))}
+                  </div>
+                  <div className="relative ml-auto w-full sm:w-64">
+                    <Icon name="search" size={14} className="absolute left-2.5 top-1/2 -translate-y-1/2 text-neutral-400" />
+                    <input
+                      value={searchQuery}
+                      onChange={(e) => setSearchQuery(e.target.value)}
+                      placeholder="Buscar favorecido ou chave PIX"
+                      className="w-full text-sm border border-neutral-300 rounded-md pl-8 pr-2.5 py-1.5 bg-white"
+                    />
+                  </div>
+                </div>
+
                 <div className="grid grid-cols-2 sm:grid-cols-4 gap-2 mb-4">
                   {relevantEmpresas.map((emp) => {
                     const empCards = relevantCards.filter((c) => c.origemId === emp.id);
@@ -939,7 +1118,8 @@ function PixBoard() {
                             <p className="text-sm font-medium text-neutral-900 truncate">{card.favorecido}</p>
                           </div>
                           <p className="text-[11px] text-neutral-400">
-                            {origem ? origem.nome : ""} · {formatDate(card.createdAt)}
+                            {origem ? origem.nome : ""} · Criado {formatDate(card.createdAt)}
+                            {card.pagoEm ? ` · Enviado ${formatDate(card.pagoEm)}` : ""}
                             {card.descricao ? ` · ${card.descricao}` : ""}
                           </p>
                         </div>
@@ -954,6 +1134,27 @@ function PixBoard() {
               </>
             );
           })()}
+        </div>
+      )}
+
+      {page === "activities" && session.type === "chefe" && (
+        <div className="bg-white border border-neutral-200 rounded-lg overflow-hidden pb-4">
+          {activities.length === 0 && (
+            <p className="text-sm text-neutral-400 text-center py-10">Nenhuma atividade registrada ainda.</p>
+          )}
+          {activities.map((act) => (
+            <div key={act.id} className="flex items-start gap-3 px-4 py-2.5 border-b border-neutral-100 last:border-0">
+              <span className="mt-0.5 text-neutral-400 flex-shrink-0">
+                <Icon name={activityIcon(act.acao)} size={14} />
+              </span>
+              <div className="min-w-0">
+                <p className="text-sm text-neutral-800">
+                  <span className="font-medium">{act.ator}</span> · {act.detalhe}
+                </p>
+                <p className="text-[11px] text-neutral-400 font-mono-num">{formatDate(act.em)}</p>
+              </div>
+            </div>
+          ))}
         </div>
       )}
 
