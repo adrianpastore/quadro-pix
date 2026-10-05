@@ -150,6 +150,65 @@ function uid() {
   return Date.now().toString(36) + Math.random().toString(36).slice(2, 8);
 }
 
+// O Firestore aceita no máximo 500 operações por batch.
+const BATCH_LIMIT = 450;
+
+async function commitInChunks(items, applyOp) {
+  for (let i = 0; i < items.length; i += BATCH_LIMIT) {
+    const batch = window.db.batch();
+    items.slice(i, i + BATCH_LIMIT).forEach((item) => applyOp(batch, item));
+    await batch.commit();
+  }
+}
+
+function cardStatus(card) {
+  if (card.archived) return "Arquivado";
+  if (card.columnId === "feito") return "Feito";
+  return "Pendente";
+}
+
+function csvCell(value) {
+  const s = value === null || value === undefined ? "" : String(value);
+  return /[";\n\r]/.test(s) ? `"${s.replace(/"/g, '""')}"` : s;
+}
+
+function formatDateFull(iso) {
+  if (!iso) return "";
+  return new Date(iso).toLocaleString("pt-BR");
+}
+
+// CSV com ";" e vírgula decimal, que é o que o Excel em português espera.
+function cardsToCsv(list) {
+  const header = ["Estabelecimento", "Favorecido", "Chave PIX", "Descrição", "Valor", "Comprovante", "Status", "Criado em", "Enviado em"];
+  const rows = list.map((c) => {
+    const origem = empresaById(c.origemId);
+    return [
+      origem ? origem.nome : c.origemId,
+      c.favorecido,
+      c.chavePix,
+      c.descricao,
+      Number(c.valor || 0).toFixed(2).replace(".", ","),
+      c.precisaComprovante ? "Sim" : "Não",
+      cardStatus(c),
+      formatDateFull(c.createdAt),
+      formatDateFull(c.pagoEm),
+    ];
+  });
+  return [header, ...rows].map((r) => r.map(csvCell).join(";")).join("\r\n");
+}
+
+function downloadCsv(list, nomeBase) {
+  const blob = new Blob(["﻿" + cardsToCsv(list)], { type: "text/csv;charset=utf-8" });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement("a");
+  a.href = url;
+  a.download = `${nomeBase}-${new Date().toISOString().slice(0, 10)}.csv`;
+  document.body.appendChild(a);
+  a.click();
+  a.remove();
+  setTimeout(() => URL.revokeObjectURL(url), 1000);
+}
+
 function Icon({ name, size = 16, className = "" }) {
   const p = {
     width: size,
@@ -247,6 +306,14 @@ function Icon({ name, size = 16, className = "" }) {
           <polyline points="12 7 12 12 15.5 14" />
         </svg>
       );
+    case "download":
+      return (
+        <svg {...p}>
+          <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4" />
+          <polyline points="7 10 12 15 17 10" />
+          <line x1="12" y1="15" x2="12" y2="3" />
+        </svg>
+      );
     default:
       return null;
   }
@@ -276,6 +343,7 @@ function PixBoard() {
   const [dragOverCol, setDragOverCol] = useState(null);
   const [confirmClearFeito, setConfirmClearFeito] = useState(false);
   const [confirmResetReport, setConfirmResetReport] = useState(false);
+  const [resetBackupDone, setResetBackupDone] = useState(false);
   const [confirmDeleteId, setConfirmDeleteId] = useState(null);
   const [editingCardId, setEditingCardId] = useState(null);
   const [editDraft, setEditDraft] = useState({ chavePix: "", favorecido: "", descricao: "", valor: "", comprovante: null });
@@ -517,15 +585,11 @@ function PixBoard() {
   async function archiveAllDone() {
     if (!session || session.type !== "chefe") return;
     try {
-      const batch = window.db.batch();
       const alvo = cards.filter((c) => c.columnId === "feito" && !c.archived);
-      alvo.forEach((c) => {
-        batch.update(window.db.collection(CARDS_COLLECTION).doc(c.id), {
-          archived: true,
-          archivedAt: new Date().toISOString(),
-        });
-      });
-      await batch.commit();
+      const archivedAt = new Date().toISOString();
+      await commitInChunks(alvo, (batch, c) =>
+        batch.update(window.db.collection(CARDS_COLLECTION).doc(c.id), { archived: true, archivedAt })
+      );
       if (alvo.length > 0) logActivity("arquivar", `Arquivou ${alvo.length} PIX concluídos`);
     } catch (e) {
       setLoadError("Não foi possível arquivar agora.");
@@ -536,16 +600,21 @@ function PixBoard() {
 
   async function resetAllReports() {
     if (!session || session.type !== "chefe") return;
+    const alvo = cards;
     try {
-      const batch = window.db.batch();
-      cards.forEach((c) => batch.delete(window.db.collection(CARDS_COLLECTION).doc(c.id)));
-      await batch.commit();
-      if (cards.length > 0) logActivity("zerar", `Zerou todos os relatórios (${cards.length} PIX apagados)`);
+      await commitInChunks(alvo, (batch, c) => batch.delete(window.db.collection(CARDS_COLLECTION).doc(c.id)));
+      if (alvo.length > 0) logActivity("zerar", `Zerou todos os relatórios (${alvo.length} PIX apagados)`);
     } catch (e) {
-      setLoadError("Não foi possível zerar agora.");
+      setLoadError("Não foi possível zerar tudo. Alguns PIX podem não ter sido apagados; tente de novo.");
     } finally {
       setConfirmResetReport(false);
+      setResetBackupDone(false);
     }
+  }
+
+  function openResetConfirm() {
+    setResetBackupDone(false);
+    setConfirmResetReport(true);
   }
 
   function copyPix(id, chave) {
@@ -1070,6 +1139,13 @@ function PixBoard() {
                       </button>
                     ))}
                   </div>
+                  <button
+                    onClick={() => downloadCsv(relevantCards, "relatorio-pix")}
+                    disabled={relevantCards.length === 0}
+                    className="flex items-center gap-1.5 text-xs rounded-md px-2.5 py-1.5 border bg-white text-neutral-700 border-neutral-300 hover:bg-neutral-50 disabled:opacity-40"
+                  >
+                    <Icon name="download" size={13} /> Exportar CSV
+                  </button>
                   <div className="relative ml-auto w-full sm:w-64">
                     <Icon name="search" size={14} className="absolute left-2.5 top-1/2 -translate-y-1/2 text-neutral-400" />
                     <input
@@ -1160,7 +1236,7 @@ function PixBoard() {
 
       {page === "report" && session.type === "chefe" && (
         <button
-          onClick={() => setConfirmResetReport(true)}
+          onClick={openResetConfirm}
           className="fixed bottom-5 right-5 flex items-center gap-1.5 bg-red-600 hover:bg-red-700 text-white text-sm font-medium rounded-full px-4 py-2.5 shadow-lg z-40"
         >
           <Icon name="trash" size={14} /> Zerar relatórios
@@ -1195,8 +1271,22 @@ function PixBoard() {
           <div className="bg-white rounded-lg p-5 max-w-sm w-full">
             <h2 className="font-display text-lg text-neutral-900 mb-1">Zerar todos os relatórios?</h2>
             <p className="text-sm text-neutral-500 mb-4">
-              Isso apaga TODOS os PIX de todos os estabelecimentos (pendentes, feitos e arquivados) pra sempre. Não tem como desfazer.
+              Isso apaga TODOS os {cards.length} PIX de todos os estabelecimentos (pendentes, feitos e arquivados) pra sempre. Não tem como desfazer.
             </p>
+            <button
+              onClick={() => {
+                downloadCsv(cards, "backup-pix");
+                setResetBackupDone(true);
+              }}
+              disabled={cards.length === 0}
+              className="w-full flex items-center justify-center gap-1.5 border border-neutral-300 rounded-md py-2 mb-2 text-neutral-800 hover:bg-neutral-50 disabled:opacity-40"
+            >
+              {resetBackupDone ? <Icon name="check" size={14} /> : <Icon name="download" size={14} />}
+              {resetBackupDone ? "Backup baixado" : "1. Baixar backup (CSV)"}
+            </button>
+            {!resetBackupDone && cards.length > 0 && (
+              <p className="text-xs text-neutral-500 mb-3">Baixe o backup antes de zerar.</p>
+            )}
             <div className="flex gap-2">
               <button
                 onClick={() => setConfirmResetReport(false)}
@@ -1206,7 +1296,8 @@ function PixBoard() {
               </button>
               <button
                 onClick={resetAllReports}
-                className="flex-1 bg-red-600 text-white rounded-md py-2 hover:bg-red-700"
+                disabled={!resetBackupDone && cards.length > 0}
+                className="flex-1 bg-red-600 text-white rounded-md py-2 hover:bg-red-700 disabled:opacity-40 disabled:hover:bg-red-600"
               >
                 Zerar tudo
               </button>
