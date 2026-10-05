@@ -1,0 +1,8 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+.font-display { font-family: 'Fraunces', serif; }
+.font-mono-num { font-family: 'IBM Plex Mono', monospace; }
+.font-ui { font-family: 'Inter', sans-serif; }
+body { margin: 0; }
