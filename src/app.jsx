@@ -157,12 +157,25 @@ function cardsToCsv(list) {
   return [header, ...rows].map((r) => r.map(csvCell).join(";")).join("\r\n");
 }
 
-function downloadCsv(list, nomeBase) {
+const MESES = ["Janeiro", "Fevereiro", "Março", "Abril", "Maio", "Junho", "Julho", "Agosto", "Setembro", "Outubro", "Novembro", "Dezembro"];
+
+// Chave "AAAA-MM" do mês em que o PIX foi criado (horário local).
+function monthKey(iso) {
+  const d = iso ? new Date(iso) : new Date();
+  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}`;
+}
+
+function monthLabel(key) {
+  const [ano, mes] = key.split("-");
+  return `${MESES[Number(mes) - 1]} ${ano}`;
+}
+
+function downloadCsv(list, nomeBase, comData = true) {
   const blob = new Blob(["﻿" + cardsToCsv(list)], { type: "text/csv;charset=utf-8" });
   const url = URL.createObjectURL(blob);
   const a = document.createElement("a");
   a.href = url;
-  a.download = `${nomeBase}-${new Date().toISOString().slice(0, 10)}.csv`;
+  a.download = comData ? `${nomeBase}-${new Date().toISOString().slice(0, 10)}.csv` : `${nomeBase}.csv`;
   document.body.appendChild(a);
   a.click();
   a.remove();
@@ -310,7 +323,8 @@ function PixBoard() {
   const [editError, setEditError] = useState("");
   const [page, setPage] = useState("board");
   const [searchQuery, setSearchQuery] = useState("");
-  const [reportPeriod, setReportPeriod] = useState("all");
+  // "current" = mês atual, "all" = todos os meses, ou "AAAA-MM" de um mês arquivado.
+  const [reportMonth, setReportMonth] = useState("current");
   const [activities, setActivities] = useState([]);
   // No celular o quadro mostra uma coluna por vez, escolhida pelas abas.
   const [mobileCol, setMobileCol] = useState(null);
@@ -600,21 +614,6 @@ function PixBoard() {
       (card.chavePix || "").toLowerCase().includes(q) ||
       (card.descricao || "").toLowerCase().includes(q)
     );
-  }
-
-  function periodCutoff() {
-    const now = new Date();
-    if (reportPeriod === "week") {
-      const d = new Date(now);
-      d.setDate(d.getDate() - 7);
-      return d;
-    }
-    if (reportPeriod === "month") {
-      const d = new Date(now);
-      d.setDate(d.getDate() - 30);
-      return d;
-    }
-    return null;
   }
 
   function activityIcon(acao) {
@@ -1092,10 +1091,16 @@ function PixBoard() {
         <div className="pb-20">
           {(() => {
             const relevantEmpresas = EMPRESAS;
-            const cutoff = periodCutoff();
-            const relevantCards = cards
-              .filter((c) => relevantEmpresas.some((e) => e.id === c.origemId))
-              .filter((c) => !cutoff || new Date(c.createdAt) >= cutoff)
+            const currentMonth = monthKey();
+            const selectedMonth = reportMonth === "current" ? currentMonth : reportMonth;
+            const empresaCards = cards.filter((c) => relevantEmpresas.some((e) => e.id === c.origemId));
+            // Meses que já acabaram e têm PIX: ficam arquivados e só aparecem ao escolher o mês.
+            const archivedMonths = [...new Set(empresaCards.map((c) => monthKey(c.createdAt)))]
+              .filter((k) => k < currentMonth)
+              .sort()
+              .reverse();
+            const relevantCards = empresaCards
+              .filter((c) => selectedMonth === "all" || monthKey(c.createdAt) === selectedMonth)
               .filter(matchesSearch)
               .sort((a, b) => new Date(b.createdAt) - new Date(a.createdAt));
             const grandTotal = relevantCards.reduce((sum, c) => sum + Number(c.valor || 0), 0);
@@ -1109,27 +1114,51 @@ function PixBoard() {
             return (
               <>
                 <div className="flex flex-wrap items-center gap-2 mb-3">
-                  <div className="flex gap-1.5">
-                    {[
-                      { id: "all", label: "Tudo" },
-                      { id: "week", label: "Última semana" },
-                      { id: "month", label: "Últimos 30 dias" },
-                    ].map((opt) => (
-                      <button
-                        key={opt.id}
-                        onClick={() => setReportPeriod(opt.id)}
-                        className={`text-xs rounded-md px-2.5 py-2 sm:py-1.5 border whitespace-nowrap ${
-                          reportPeriod === opt.id
-                            ? "bg-neutral-900 text-white border-neutral-900"
-                            : "bg-white text-neutral-600 border-neutral-300"
-                        }`}
-                      >
-                        {opt.label}
-                      </button>
-                    ))}
+                  <div className="flex flex-wrap gap-1.5">
+                    <button
+                      onClick={() => setReportMonth("current")}
+                      className={`text-xs rounded-md px-2.5 py-2 sm:py-1.5 border whitespace-nowrap ${
+                        selectedMonth === currentMonth
+                          ? "bg-neutral-900 text-white border-neutral-900"
+                          : "bg-white text-neutral-600 border-neutral-300"
+                      }`}
+                    >
+                      {monthLabel(currentMonth)} (atual)
+                    </button>
+                    <select
+                      value={archivedMonths.includes(selectedMonth) ? selectedMonth : ""}
+                      onChange={(e) => e.target.value && setReportMonth(e.target.value)}
+                      disabled={archivedMonths.length === 0}
+                      className={`text-xs rounded-md px-2 py-2 sm:py-1.5 border disabled:opacity-40 ${
+                        archivedMonths.includes(selectedMonth)
+                          ? "bg-neutral-900 text-white border-neutral-900"
+                          : "bg-white text-neutral-600 border-neutral-300"
+                      }`}
+                    >
+                      <option value="">Meses arquivados ({archivedMonths.length})</option>
+                      {archivedMonths.map((k) => (
+                        <option key={k} value={k}>
+                          {monthLabel(k)}
+                        </option>
+                      ))}
+                    </select>
+                    <button
+                      onClick={() => setReportMonth("all")}
+                      className={`text-xs rounded-md px-2.5 py-2 sm:py-1.5 border whitespace-nowrap ${
+                        selectedMonth === "all"
+                          ? "bg-neutral-900 text-white border-neutral-900"
+                          : "bg-white text-neutral-600 border-neutral-300"
+                      }`}
+                    >
+                      Todos os meses
+                    </button>
                   </div>
                   <button
-                    onClick={() => downloadCsv(relevantCards, "relatorio-pix")}
+                    onClick={() =>
+                      selectedMonth === "all"
+                        ? downloadCsv(relevantCards, "relatorio-pix-todos")
+                        : downloadCsv(relevantCards, `relatorio-pix-${selectedMonth}`, false)
+                    }
                     disabled={relevantCards.length === 0}
                     className="flex items-center gap-1.5 text-xs rounded-md px-2.5 py-2 sm:py-1.5 border bg-white text-neutral-700 border-neutral-300 hover:bg-neutral-50 disabled:opacity-40"
                   >
@@ -1145,6 +1174,15 @@ function PixBoard() {
                     />
                   </div>
                 </div>
+
+                {archivedMonths.includes(selectedMonth) && (
+                  <div className="flex items-center justify-between gap-2 mb-3 rounded-md border border-neutral-300 bg-neutral-100 px-3 py-2 text-sm text-neutral-700">
+                    <span>Mês arquivado: {monthLabel(selectedMonth)}</span>
+                    <button onClick={() => setReportMonth("current")} className="text-xs underline text-neutral-600">
+                      Voltar ao mês atual
+                    </button>
+                  </div>
+                )}
 
                 <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-5 gap-2 mb-4">
                   {relevantEmpresas.map((emp) => {
@@ -1170,7 +1208,9 @@ function PixBoard() {
 
                 <div className="bg-white border border-neutral-200 rounded-lg overflow-hidden">
                   {relevantCards.length === 0 && (
-                    <p className="text-sm text-neutral-400 text-center py-10">Nenhum PIX registrado ainda.</p>
+                    <p className="text-sm text-neutral-400 text-center py-10">
+                      {selectedMonth === "all" ? "Nenhum PIX registrado ainda." : `Nenhum PIX em ${monthLabel(selectedMonth)}.`}
+                    </p>
                   )}
                   {relevantCards.map((card) => {
                     const origem = empresaById(card.origemId);
