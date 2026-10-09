@@ -292,6 +292,80 @@ function Icon({ name, size = 16, className = "" }) {
   }
 }
 
+function Spinner({ size = 14, className = "" }) {
+  return (
+    <svg className={`animate-spin ${className}`} width={size} height={size} viewBox="0 0 24 24" fill="none" aria-hidden="true">
+      <circle cx="12" cy="12" r="9" stroke="currentColor" strokeWidth="3" opacity="0.25" />
+      <path d="M21 12a9 9 0 0 0-9-9" stroke="currentColor" strokeWidth="3" strokeLinecap="round" />
+    </svg>
+  );
+}
+
+// Campo de formulário com destaque em vermelho e a mensagem de erro logo abaixo.
+function FormField({ error, className = "", ...props }) {
+  return (
+    <div className="mb-1.5">
+      <input
+        {...props}
+        aria-invalid={error ? "true" : undefined}
+        className={`w-full text-base sm:text-sm border rounded px-2 py-2 sm:py-1.5 ${
+          error ? "border-red-500 bg-red-50" : "border-neutral-300"
+        } ${className}`}
+      />
+      {error && <p className="text-xs text-red-600 mt-0.5">{error}</p>}
+    </div>
+  );
+}
+
+// Valida os campos do PIX e devolve os erros por campo e o valor numérico.
+function validatePix(d, exigeComprovante) {
+  const errors = {};
+  if (!d.chavePix.trim()) errors.chavePix = "Informe a chave PIX.";
+  if (!d.favorecido.trim()) errors.favorecido = "Informe o favorecido.";
+  const numeric = Number(String(d.valor).replace(",", "."));
+  if (!String(d.valor).trim()) errors.valor = "Informe o valor.";
+  else if (Number.isNaN(numeric) || numeric <= 0) errors.valor = "Informe um valor válido (ex: 150,00).";
+  if (exigeComprovante && d.comprovante === null) errors.comprovante = "Selecione se precisa de comprovante.";
+  return { errors, numeric };
+}
+
+function FalhaTela({ mensagem }) {
+  return (
+    <div className="font-ui w-full min-h-screen bg-neutral-50 flex items-center justify-center p-6">
+      <div className="w-full max-w-sm bg-white border border-neutral-200 rounded-lg p-5 text-center">
+        <h1 className="font-display text-xl text-neutral-900 mb-2">Algo deu errado</h1>
+        <p className="text-sm text-neutral-600 mb-4">{mensagem}</p>
+        <button
+          onClick={() => window.location.reload()}
+          className="w-full bg-neutral-900 text-white rounded-md py-2.5 hover:bg-neutral-800"
+        >
+          Recarregar a página
+        </button>
+      </div>
+    </div>
+  );
+}
+
+// Evita a tela branca se acontecer algum erro inesperado na tela.
+class ErrorBoundary extends React.Component {
+  constructor(props) {
+    super(props);
+    this.state = { hasError: false };
+  }
+  static getDerivedStateFromError() {
+    return { hasError: true };
+  }
+  componentDidCatch(error) {
+    console.error(error);
+  }
+  render() {
+    if (this.state.hasError) {
+      return <FalhaTela mensagem="O quadro encontrou um problema inesperado. Recarregue a página para continuar." />;
+    }
+    return this.props.children;
+  }
+}
+
 function loadSession() {
   try {
     const raw = localStorage.getItem(SESSION_KEY);
@@ -311,7 +385,7 @@ function PixBoard() {
   const [loginError, setLoginError] = useState("");
   const [openForm, setOpenForm] = useState(null);
   const [draft, setDraft] = useState({ chavePix: "", favorecido: "", descricao: "", valor: "", comprovante: null });
-  const [formError, setFormError] = useState("");
+  const [formErrors, setFormErrors] = useState({});
   const [copiedId, setCopiedId] = useState(null);
   const [dragOverCol, setDragOverCol] = useState(null);
   const [confirmClearFeito, setConfirmClearFeito] = useState(false);
@@ -320,7 +394,7 @@ function PixBoard() {
   const [confirmDeleteId, setConfirmDeleteId] = useState(null);
   const [editingCardId, setEditingCardId] = useState(null);
   const [editDraft, setEditDraft] = useState({ chavePix: "", favorecido: "", descricao: "", valor: "", comprovante: null });
-  const [editError, setEditError] = useState("");
+  const [editErrors, setEditErrors] = useState({});
   const [page, setPage] = useState("board");
   const [searchQuery, setSearchQuery] = useState("");
   // "current" = mês atual, "all" = todos os meses, ou "AAAA-MM" de um mês arquivado.
@@ -328,6 +402,13 @@ function PixBoard() {
   const [activities, setActivities] = useState([]);
   // No celular o quadro mostra uma coluna por vez, escolhida pelas abas.
   const [mobileCol, setMobileCol] = useState(null);
+  // Ação em andamento no Firestore ("add", "edit", "delete", "archive", "reset"), para travar clique duplo.
+  const [busy, setBusy] = useState(null);
+  const [movingIds, setMovingIds] = useState([]);
+  const [syncFailed, setSyncFailed] = useState(false);
+  const [activitiesLoading, setActivitiesLoading] = useState(true);
+  const [activitiesError, setActivitiesError] = useState("");
+  const [online, setOnline] = useState(() => (typeof navigator === "undefined" ? true : navigator.onLine !== false));
 
   useEffect(() => {
     const unsub = window.db.collection(CARDS_COLLECTION).onSnapshot(
@@ -336,10 +417,12 @@ function PixBoard() {
         setCards(list);
         setLoading(false);
         setLoadError("");
+        setSyncFailed(false);
       },
       (err) => {
         console.error(err);
-        setLoadError("Não foi possível sincronizar com o servidor.");
+        setLoadError("Não foi possível conectar ao servidor. Verifique a internet e recarregue a página.");
+        setSyncFailed(true);
         setLoading(false);
       }
     );
@@ -347,7 +430,20 @@ function PixBoard() {
   }, []);
 
   useEffect(() => {
+    const goOnline = () => setOnline(true);
+    const goOffline = () => setOnline(false);
+    window.addEventListener("online", goOnline);
+    window.addEventListener("offline", goOffline);
+    return () => {
+      window.removeEventListener("online", goOnline);
+      window.removeEventListener("offline", goOffline);
+    };
+  }, []);
+
+  useEffect(() => {
     if (!session || session.type !== "chefe") return;
+    setActivitiesLoading(true);
+    setActivitiesError("");
     const unsub = window.db
       .collection(ACTIVITY_COLLECTION)
       .orderBy("em", "desc")
@@ -355,8 +451,14 @@ function PixBoard() {
       .onSnapshot(
         (snapshot) => {
           setActivities(snapshot.docs.map((d) => ({ id: d.id, ...d.data() })));
+          setActivitiesLoading(false);
+          setActivitiesError("");
         },
-        (err) => console.error(err)
+        (err) => {
+          console.error(err);
+          setActivitiesError("Não foi possível carregar as atividades. Verifique a internet e recarregue a página.");
+          setActivitiesLoading(false);
+        }
       );
     return () => unsub();
   }, [session]);
@@ -429,21 +531,24 @@ function PixBoard() {
   function openAddForm(columnId) {
     setOpenForm(columnId);
     setDraft({ chavePix: "", favorecido: "", descricao: "", valor: "", comprovante: null });
-    setFormError("");
+    setFormErrors({});
+  }
+
+  function setDraftField(field, value) {
+    setDraft((d) => ({ ...d, [field]: value }));
+    setFormErrors((errs) => ({ ...errs, [field]: undefined, geral: undefined }));
+  }
+
+  function setEditField(field, value) {
+    setEditDraft((d) => ({ ...d, [field]: value }));
+    setEditErrors((errs) => ({ ...errs, [field]: undefined, geral: undefined }));
   }
 
   async function submitCard(columnId) {
-    if (!draft.chavePix.trim() || !draft.favorecido.trim() || !draft.valor) {
-      setFormError("Preencha chave PIX, favorecido e valor.");
-      return;
-    }
-    if (draft.comprovante === null) {
-      setFormError("Selecione se precisa de comprovante.");
-      return;
-    }
-    const numeric = Number(String(draft.valor).replace(",", "."));
-    if (Number.isNaN(numeric) || numeric <= 0) {
-      setFormError("Informe um valor válido.");
+    if (busy) return;
+    const { errors, numeric } = validatePix(draft, true);
+    if (Object.keys(errors).length > 0) {
+      setFormErrors(errors);
       return;
     }
     const id = uid();
@@ -458,18 +563,22 @@ function PixBoard() {
       createdAt: new Date().toISOString(),
       archived: false,
     };
+    setBusy("add");
     try {
       await window.db.collection(CARDS_COLLECTION).doc(id).set(newCard);
       setOpenForm(null);
       setLoadError("");
       logActivity("criar", `Novo PIX para ${newCard.favorecido} · ${formatMoney(newCard.valor)}`);
     } catch (e) {
-      setFormError("Não foi possível salvar agora. Tente novamente.");
+      setFormErrors({ geral: "Não foi possível salvar agora. Verifique a internet e tente novamente." });
+    } finally {
+      setBusy(null);
     }
   }
 
   async function moveCard(cardId, targetColumnId) {
     if (!session || session.type !== "chefe") return;
+    if (movingIds.includes(cardId)) return;
     const card = cards.find((c) => c.id === cardId);
     const update = { columnId: targetColumnId };
     if (targetColumnId === "feito") {
@@ -477,6 +586,7 @@ function PixBoard() {
     } else {
       update.pagoEm = null;
     }
+    setMovingIds((ids) => [...ids, cardId]);
     try {
       await window.db.collection(CARDS_COLLECTION).doc(cardId).update(update);
       if (card) {
@@ -488,7 +598,9 @@ function PixBoard() {
         }
       }
     } catch (e) {
-      setLoadError("Não foi possível mover o card agora.");
+      setLoadError("Não foi possível mover o card agora. Verifique a internet e tente novamente.");
+    } finally {
+      setMovingIds((ids) => ids.filter((x) => x !== cardId));
     }
   }
 
@@ -498,15 +610,18 @@ function PixBoard() {
 
   async function deleteCard(cardId) {
     if (!session || session.type !== "chefe") return;
+    if (busy) return;
     const card = cards.find((c) => c.id === cardId);
+    setBusy("delete");
     try {
       await window.db.collection(CARDS_COLLECTION).doc(cardId).delete();
       if (card) {
         logActivity("excluir", `Excluiu o PIX de ${card.favorecido} · ${formatMoney(card.valor)}`);
       }
     } catch (e) {
-      setLoadError("Não foi possível excluir agora.");
+      setLoadError("Não foi possível excluir agora. Verifique a internet e tente novamente.");
     } finally {
+      setBusy(null);
       setConfirmDeleteId(null);
     }
   }
@@ -526,24 +641,22 @@ function PixBoard() {
       valor: String(card.valor),
       comprovante: !!card.precisaComprovante,
     });
-    setEditError("");
+    setEditErrors({});
   }
 
   function cancelEdit() {
     setEditingCardId(null);
-    setEditError("");
+    setEditErrors({});
   }
 
   async function submitEdit(cardId) {
-    if (!editDraft.chavePix.trim() || !editDraft.favorecido.trim() || !editDraft.valor) {
-      setEditError("Preencha chave PIX, favorecido e valor.");
+    if (busy) return;
+    const { errors, numeric } = validatePix(editDraft, false);
+    if (Object.keys(errors).length > 0) {
+      setEditErrors(errors);
       return;
     }
-    const numeric = Number(String(editDraft.valor).replace(",", "."));
-    if (Number.isNaN(numeric) || numeric <= 0) {
-      setEditError("Informe um valor válido.");
-      return;
-    }
+    setBusy("edit");
     try {
       await window.db.collection(CARDS_COLLECTION).doc(cardId).update({
         chavePix: editDraft.chavePix.trim(),
@@ -555,12 +668,16 @@ function PixBoard() {
       setEditingCardId(null);
       logActivity("editar", `Editou o PIX de ${editDraft.favorecido.trim()} · ${formatMoney(numeric)}`);
     } catch (e) {
-      setEditError("Não foi possível salvar agora. Tente novamente.");
+      setEditErrors({ geral: "Não foi possível salvar agora. Verifique a internet e tente novamente." });
+    } finally {
+      setBusy(null);
     }
   }
 
   async function archiveAllDone() {
     if (!session || session.type !== "chefe") return;
+    if (busy) return;
+    setBusy("archive");
     try {
       const alvo = cards.filter((c) => c.columnId === "feito" && !c.archived);
       const archivedAt = new Date().toISOString();
@@ -569,21 +686,25 @@ function PixBoard() {
       );
       if (alvo.length > 0) logActivity("arquivar", `Arquivou ${alvo.length} PIX concluídos`);
     } catch (e) {
-      setLoadError("Não foi possível arquivar agora.");
+      setLoadError("Não foi possível arquivar agora. Verifique a internet e tente novamente.");
     } finally {
+      setBusy(null);
       setConfirmClearFeito(false);
     }
   }
 
   async function resetAllReports() {
     if (!session || session.type !== "chefe") return;
+    if (busy) return;
     const alvo = cards;
+    setBusy("reset");
     try {
       await commitInChunks(alvo, (batch, c) => batch.delete(window.db.collection(CARDS_COLLECTION).doc(c.id)));
       if (alvo.length > 0) logActivity("zerar", `Zerou todos os relatórios (${alvo.length} PIX apagados)`);
     } catch (e) {
       setLoadError("Não foi possível zerar tudo. Alguns PIX podem não ter sido apagados; tente de novo.");
     } finally {
+      setBusy(null);
       setConfirmResetReport(false);
       setResetBackupDone(false);
     }
@@ -640,7 +761,9 @@ function PixBoard() {
   if (loading) {
     return (
       <div className="font-ui w-full min-h-screen bg-neutral-50 flex items-center justify-center">
-        <p className="text-neutral-400 text-sm">Carregando...</p>
+        <p className="text-neutral-500 text-sm flex items-center gap-2" role="status">
+          <Spinner size={16} /> Carregando PIX…
+        </p>
       </div>
     );
   }
@@ -651,6 +774,12 @@ function PixBoard() {
         <div className="w-full max-w-md">
           <h1 className="font-display text-3xl text-neutral-900 mb-1 text-center">Quadro de PIX</h1>
           <p className="text-neutral-500 text-sm text-center mb-8">Controle de pagamentos por estabelecimento</p>
+
+          {(syncFailed || !online) && (
+            <div className="mb-4 text-sm text-red-700 bg-red-50 border border-red-200 rounded-md px-3 py-2" role="alert">
+              {!online ? "Sem conexão com a internet. O quadro volta a funcionar quando a conexão voltar." : loadError}
+            </div>
+          )}
 
           {!selectedRole ? (
             <div className="grid grid-cols-1 gap-2">
@@ -685,11 +814,17 @@ function PixBoard() {
                 autoComplete="off"
                 maxLength={8}
                 value={pinInput}
-                onChange={(ev) => setPinInput(ev.target.value.replace(/[^0-9]/g, ""))}
+                onChange={(ev) => {
+                  setPinInput(ev.target.value.replace(/[^0-9]/g, ""));
+                  setLoginError("");
+                }}
                 onKeyDown={(ev) => {
                   if (ev.key === "Enter") handleLoginSubmit();
                 }}
-                className="w-full border border-neutral-300 rounded-md px-3 py-2 mb-2 tracking-widest text-lg font-mono-num"
+                aria-invalid={loginError ? "true" : undefined}
+                className={`w-full border rounded-md px-3 py-2 mb-2 tracking-widest text-lg font-mono-num ${
+                  loginError ? "border-red-500 bg-red-50" : "border-neutral-300"
+                }`}
                 placeholder="Digite o PIN"
               />
               {loginError && <p className="text-sm text-red-600 mb-2">{loginError}</p>}
@@ -775,9 +910,26 @@ function PixBoard() {
         )}
       </div>
 
+      {!online && (
+        <div className="mb-3 mx-1 text-sm text-amber-800 bg-amber-50 border border-amber-200 rounded-md px-3 py-2" role="alert">
+          Sem conexão com a internet. O que você fizer agora só será salvo quando a conexão voltar.
+        </div>
+      )}
+
       {loadError && (
-        <div className="mb-3 mx-1 text-sm text-red-700 bg-red-50 border border-red-200 rounded-md px-3 py-2">
-          {loadError}
+        <div
+          className="mb-3 mx-1 text-sm text-red-700 bg-red-50 border border-red-200 rounded-md px-3 py-2 flex flex-wrap items-center justify-between gap-2"
+          role="alert"
+        >
+          <span>{loadError}</span>
+          {syncFailed && (
+            <button
+              onClick={() => window.location.reload()}
+              className="text-sm font-medium border border-red-300 rounded-md px-3 py-1.5 bg-white hover:bg-red-100"
+            >
+              Recarregar
+            </button>
+          )}
         </div>
       )}
 
@@ -863,43 +1015,50 @@ function PixBoard() {
                     <div className="border border-neutral-300 rounded-md p-2.5 bg-neutral-50">
                       <div className="flex justify-between items-center mb-2">
                         <p className="text-xs font-medium text-neutral-600">Novo PIX</p>
-                        <button onClick={() => setOpenForm(null)} aria-label="Cancelar">
+                        <button
+                          onClick={() => setOpenForm(null)}
+                          disabled={busy === "add"}
+                          aria-label="Cancelar"
+                          className="-m-1.5 p-1.5 disabled:opacity-40"
+                        >
                           <Icon name="x" size={14} className="text-neutral-500" />
                         </button>
                       </div>
-                      <input
+                      <FormField
                         placeholder="Chave PIX"
                         value={draft.chavePix}
-                        onChange={(e) => setDraft({ ...draft, chavePix: e.target.value })}
-                        className="w-full text-base sm:text-sm border border-neutral-300 rounded px-2 py-2 sm:py-1.5 mb-1.5"
+                        onChange={(e) => setDraftField("chavePix", e.target.value)}
+                        error={formErrors.chavePix}
                       />
-                      <input
+                      <FormField
                         placeholder="Favorecido"
                         value={draft.favorecido}
-                        onChange={(e) => setDraft({ ...draft, favorecido: e.target.value })}
-                        className="w-full text-base sm:text-sm border border-neutral-300 rounded px-2 py-2 sm:py-1.5 mb-1.5"
+                        onChange={(e) => setDraftField("favorecido", e.target.value)}
+                        error={formErrors.favorecido}
                       />
-                      <input
+                      <FormField
                         placeholder="Descrição"
                         value={draft.descricao}
-                        onChange={(e) => setDraft({ ...draft, descricao: e.target.value })}
-                        className="w-full text-base sm:text-sm border border-neutral-300 rounded px-2 py-2 sm:py-1.5 mb-1.5"
+                        onChange={(e) => setDraftField("descricao", e.target.value)}
                       />
-                      <input
+                      <FormField
                         placeholder="Valor (ex: 150,00)"
                         inputMode="decimal"
                         value={draft.valor}
-                        onChange={(e) => setDraft({ ...draft, valor: e.target.value })}
-                        className="w-full text-base sm:text-sm border border-neutral-300 rounded px-2 py-2 sm:py-1.5 mb-1.5 font-mono-num"
+                        onChange={(e) => setDraftField("valor", e.target.value)}
+                        error={formErrors.valor}
+                        className="font-mono-num"
                       />
                       <p className="text-xs text-neutral-500 mb-1">Comprovante</p>
-                      <div className="flex gap-1.5 mb-1.5">
+                      <div className={`flex gap-1.5 ${formErrors.comprovante ? "mb-0.5" : "mb-1.5"}`}>
                         <button
                           type="button"
-                          onClick={() => setDraft({ ...draft, comprovante: true })}
-                          className={`flex-1 text-sm rounded px-2 py-1.5 border ${
+                          onClick={() => setDraftField("comprovante", true)}
+                          className={`flex-1 text-sm rounded px-2 py-2 sm:py-1.5 border ${
                             draft.comprovante === true
                               ? "bg-neutral-900 text-white border-neutral-900"
+                              : formErrors.comprovante
+                              ? "bg-red-50 text-neutral-600 border-red-500"
                               : "bg-white text-neutral-600 border-neutral-300"
                           }`}
                         >
@@ -907,28 +1066,44 @@ function PixBoard() {
                         </button>
                         <button
                           type="button"
-                          onClick={() => setDraft({ ...draft, comprovante: false })}
-                          className={`flex-1 text-sm rounded px-2 py-1.5 border ${
+                          onClick={() => setDraftField("comprovante", false)}
+                          className={`flex-1 text-sm rounded px-2 py-2 sm:py-1.5 border ${
                             draft.comprovante === false
                               ? "bg-neutral-900 text-white border-neutral-900"
+                              : formErrors.comprovante
+                              ? "bg-red-50 text-neutral-600 border-red-500"
                               : "bg-white text-neutral-600 border-neutral-300"
                           }`}
                         >
                           Não
                         </button>
                       </div>
-                      {formError && <p className="text-xs text-red-600 mb-1.5">{formError}</p>}
+                      {formErrors.comprovante && <p className="text-xs text-red-600 mb-1.5">{formErrors.comprovante}</p>}
+                      {formErrors.geral && <p className="text-xs text-red-600 mb-1.5" role="alert">{formErrors.geral}</p>}
                       <button
                         onClick={() => submitCard(col.id)}
-                        className={`w-full text-white text-sm rounded py-1.5 ${col.classes.btn}`}
+                        disabled={busy === "add"}
+                        className={`w-full text-white text-sm rounded py-2.5 sm:py-1.5 flex items-center justify-center gap-1.5 disabled:opacity-60 disabled:cursor-wait ${col.classes.btn}`}
                       >
-                        Adicionar
+                        {busy === "add" ? (
+                          <>
+                            <Spinner size={14} /> Salvando…
+                          </>
+                        ) : (
+                          "Adicionar"
+                        )}
                       </button>
                     </div>
                   )}
 
                   {colCards.length === 0 && openForm !== col.id && (
-                    <p className="text-xs text-neutral-400 text-center py-6">Nenhum PIX ainda.</p>
+                    <p className="text-xs text-neutral-400 text-center py-6">
+                      {syncFailed && cards.length === 0
+                        ? "Não foi possível carregar os PIX."
+                        : searchQuery.trim()
+                        ? "Nenhum PIX encontrado para essa busca."
+                        : "Nenhum PIX ainda."}
+                    </p>
                   )}
 
                   {colCards.map((card) => {
@@ -946,37 +1121,37 @@ function PixBoard() {
                         {isEditing ? (
                           <div>
                             <p className="text-xs font-medium text-neutral-600 mb-2">Editar PIX</p>
-                            <input
+                            <FormField
                               placeholder="Chave PIX"
                               value={editDraft.chavePix}
-                              onChange={(e) => setEditDraft({ ...editDraft, chavePix: e.target.value })}
-                              className="w-full text-base sm:text-sm border border-neutral-300 rounded px-2 py-2 sm:py-1.5 mb-1.5"
+                              onChange={(e) => setEditField("chavePix", e.target.value)}
+                              error={editErrors.chavePix}
                             />
-                            <input
+                            <FormField
                               placeholder="Favorecido"
                               value={editDraft.favorecido}
-                              onChange={(e) => setEditDraft({ ...editDraft, favorecido: e.target.value })}
-                              className="w-full text-base sm:text-sm border border-neutral-300 rounded px-2 py-2 sm:py-1.5 mb-1.5"
+                              onChange={(e) => setEditField("favorecido", e.target.value)}
+                              error={editErrors.favorecido}
                             />
-                            <input
+                            <FormField
                               placeholder="Descrição"
                               value={editDraft.descricao}
-                              onChange={(e) => setEditDraft({ ...editDraft, descricao: e.target.value })}
-                              className="w-full text-base sm:text-sm border border-neutral-300 rounded px-2 py-2 sm:py-1.5 mb-1.5"
+                              onChange={(e) => setEditField("descricao", e.target.value)}
                             />
-                            <input
+                            <FormField
                               placeholder="Valor (ex: 150,00)"
                               inputMode="decimal"
                               value={editDraft.valor}
-                              onChange={(e) => setEditDraft({ ...editDraft, valor: e.target.value })}
-                              className="w-full text-base sm:text-sm border border-neutral-300 rounded px-2 py-2 sm:py-1.5 mb-1.5 font-mono-num"
+                              onChange={(e) => setEditField("valor", e.target.value)}
+                              error={editErrors.valor}
+                              className="font-mono-num"
                             />
                             <p className="text-xs text-neutral-500 mb-1">Comprovante</p>
                             <div className="flex gap-1.5 mb-1.5">
                               <button
                                 type="button"
-                                onClick={() => setEditDraft({ ...editDraft, comprovante: true })}
-                                className={`flex-1 text-sm rounded px-2 py-1.5 border ${
+                                onClick={() => setEditField("comprovante", true)}
+                                className={`flex-1 text-sm rounded px-2 py-2 sm:py-1.5 border ${
                                   editDraft.comprovante === true
                                     ? "bg-neutral-900 text-white border-neutral-900"
                                     : "bg-white text-neutral-600 border-neutral-300"
@@ -986,8 +1161,8 @@ function PixBoard() {
                               </button>
                               <button
                                 type="button"
-                                onClick={() => setEditDraft({ ...editDraft, comprovante: false })}
-                                className={`flex-1 text-sm rounded px-2 py-1.5 border ${
+                                onClick={() => setEditField("comprovante", false)}
+                                className={`flex-1 text-sm rounded px-2 py-2 sm:py-1.5 border ${
                                   editDraft.comprovante === false
                                     ? "bg-neutral-900 text-white border-neutral-900"
                                     : "bg-white text-neutral-600 border-neutral-300"
@@ -996,19 +1171,27 @@ function PixBoard() {
                                 Não
                               </button>
                             </div>
-                            {editError && <p className="text-xs text-red-600 mb-1.5">{editError}</p>}
+                            {editErrors.geral && <p className="text-xs text-red-600 mb-1.5" role="alert">{editErrors.geral}</p>}
                             <div className="flex gap-1.5">
                               <button
                                 onClick={cancelEdit}
-                                className="flex-1 border border-neutral-300 rounded py-1.5 text-sm text-neutral-600"
+                                disabled={busy === "edit"}
+                                className="flex-1 border border-neutral-300 rounded py-2.5 sm:py-1.5 text-sm text-neutral-600 disabled:opacity-40"
                               >
                                 Cancelar
                               </button>
                               <button
                                 onClick={() => submitEdit(card.id)}
-                                className={`flex-1 text-white text-sm rounded py-1.5 ${col.classes.btn}`}
+                                disabled={busy === "edit"}
+                                className={`flex-1 text-white text-sm rounded py-2.5 sm:py-1.5 flex items-center justify-center gap-1.5 disabled:opacity-60 disabled:cursor-wait ${col.classes.btn}`}
                               >
-                                Salvar
+                                {busy === "edit" ? (
+                                  <>
+                                    <Spinner size={14} /> Salvando…
+                                  </>
+                                ) : (
+                                  "Salvar"
+                                )}
                               </button>
                             </div>
                           </div>
@@ -1060,17 +1243,31 @@ function PixBoard() {
                             {session.type === "chefe" && card.columnId !== "feito" && (
                               <button
                                 onClick={() => markAsDone(card.id)}
-                                className={`w-full mt-2 text-white text-sm md:text-xs font-medium rounded py-2.5 md:py-1.5 ${FEITO_COLUMN.classes.btn}`}
+                                disabled={movingIds.includes(card.id)}
+                                className={`w-full mt-2 text-white text-sm md:text-xs font-medium rounded py-2.5 md:py-1.5 flex items-center justify-center gap-1.5 disabled:opacity-60 disabled:cursor-wait ${FEITO_COLUMN.classes.btn}`}
                               >
-                                Marcar como Feito
+                                {movingIds.includes(card.id) ? (
+                                  <>
+                                    <Spinner size={13} /> Salvando…
+                                  </>
+                                ) : (
+                                  "Marcar como Feito"
+                                )}
                               </button>
                             )}
                             {session.type === "chefe" && card.columnId === "feito" && origem && (
                               <button
                                 onClick={() => moveCard(card.id, card.origemId)}
-                                className={`w-full mt-2 text-sm md:text-xs font-medium rounded py-2.5 md:py-1.5 border ${origem.classes.badge}`}
+                                disabled={movingIds.includes(card.id)}
+                                className={`w-full mt-2 text-sm md:text-xs font-medium rounded py-2.5 md:py-1.5 border flex items-center justify-center gap-1.5 disabled:opacity-60 disabled:cursor-wait ${origem.classes.badge}`}
                               >
-                                Devolver para {origem.curto}
+                                {movingIds.includes(card.id) ? (
+                                  <>
+                                    <Spinner size={13} /> Salvando…
+                                  </>
+                                ) : (
+                                  `Devolver para ${origem.curto}`
+                                )}
                               </button>
                             )}
                           </>
@@ -1209,7 +1406,13 @@ function PixBoard() {
                 <div className="bg-white border border-neutral-200 rounded-lg overflow-hidden">
                   {relevantCards.length === 0 && (
                     <p className="text-sm text-neutral-400 text-center py-10">
-                      {selectedMonth === "all" ? "Nenhum PIX registrado ainda." : `Nenhum PIX em ${monthLabel(selectedMonth)}.`}
+                      {syncFailed && cards.length === 0
+                        ? "Não foi possível carregar os PIX."
+                        : searchQuery.trim()
+                        ? "Nenhum PIX encontrado para essa busca."
+                        : selectedMonth === "all"
+                        ? "Nenhum PIX registrado ainda."
+                        : `Nenhum PIX em ${monthLabel(selectedMonth)}.`}
                     </p>
                   )}
                   {relevantCards.map((card) => {
@@ -1244,7 +1447,17 @@ function PixBoard() {
 
       {page === "activities" && session.type === "chefe" && (
         <div className="bg-white border border-neutral-200 rounded-lg overflow-hidden pb-4">
-          {activities.length === 0 && (
+          {activitiesLoading && activities.length === 0 && (
+            <p className="text-sm text-neutral-500 text-center py-10 flex items-center justify-center gap-2" role="status">
+              <Spinner size={14} /> Carregando atividades…
+            </p>
+          )}
+          {activitiesError && (
+            <p className="text-sm text-red-700 bg-red-50 border-b border-red-200 text-center px-3 py-3" role="alert">
+              {activitiesError}
+            </p>
+          )}
+          {!activitiesLoading && !activitiesError && activities.length === 0 && (
             <p className="text-sm text-neutral-400 text-center py-10">Nenhuma atividade registrada ainda.</p>
           )}
           {activities.map((act) => (
@@ -1280,15 +1493,23 @@ function PixBoard() {
             <div className="flex gap-2">
               <button
                 onClick={() => setConfirmDeleteId(null)}
-                className="flex-1 border border-neutral-300 rounded-md py-2 text-neutral-700 hover:bg-neutral-50"
+                disabled={busy === "delete"}
+                className="flex-1 border border-neutral-300 rounded-md py-2.5 sm:py-2 text-neutral-700 hover:bg-neutral-50 disabled:opacity-40"
               >
                 Cancelar
               </button>
               <button
                 onClick={() => deleteCard(confirmDeleteId)}
-                className="flex-1 bg-red-600 text-white rounded-md py-2 hover:bg-red-700"
+                disabled={busy === "delete"}
+                className="flex-1 bg-red-600 text-white rounded-md py-2.5 sm:py-2 hover:bg-red-700 flex items-center justify-center gap-1.5 disabled:opacity-60 disabled:cursor-wait"
               >
-                Excluir
+                {busy === "delete" ? (
+                  <>
+                    <Spinner size={14} /> Excluindo…
+                  </>
+                ) : (
+                  "Excluir"
+                )}
               </button>
             </div>
           </div>
@@ -1307,8 +1528,8 @@ function PixBoard() {
                 downloadCsv(cards, "backup-pix");
                 setResetBackupDone(true);
               }}
-              disabled={cards.length === 0}
-              className="w-full flex items-center justify-center gap-1.5 border border-neutral-300 rounded-md py-2 mb-2 text-neutral-800 hover:bg-neutral-50 disabled:opacity-40"
+              disabled={cards.length === 0 || busy === "reset"}
+              className="w-full flex items-center justify-center gap-1.5 border border-neutral-300 rounded-md py-2.5 sm:py-2 mb-2 text-neutral-800 hover:bg-neutral-50 disabled:opacity-40"
             >
               {resetBackupDone ? <Icon name="check" size={14} /> : <Icon name="download" size={14} />}
               {resetBackupDone ? "Backup baixado" : "1. Baixar backup (CSV)"}
@@ -1319,16 +1540,23 @@ function PixBoard() {
             <div className="flex gap-2">
               <button
                 onClick={() => setConfirmResetReport(false)}
-                className="flex-1 border border-neutral-300 rounded-md py-2 text-neutral-700 hover:bg-neutral-50"
+                disabled={busy === "reset"}
+                className="flex-1 border border-neutral-300 rounded-md py-2.5 sm:py-2 text-neutral-700 hover:bg-neutral-50 disabled:opacity-40"
               >
                 Cancelar
               </button>
               <button
                 onClick={resetAllReports}
-                disabled={!resetBackupDone && cards.length > 0}
-                className="flex-1 bg-red-600 text-white rounded-md py-2 hover:bg-red-700 disabled:opacity-40 disabled:hover:bg-red-600"
+                disabled={(!resetBackupDone && cards.length > 0) || busy === "reset"}
+                className="flex-1 bg-red-600 text-white rounded-md py-2.5 sm:py-2 hover:bg-red-700 flex items-center justify-center gap-1.5 disabled:opacity-40 disabled:hover:bg-red-600"
               >
-                Zerar tudo
+                {busy === "reset" ? (
+                  <>
+                    <Spinner size={14} /> Zerando…
+                  </>
+                ) : (
+                  "Zerar tudo"
+                )}
               </button>
             </div>
           </div>
@@ -1345,15 +1573,23 @@ function PixBoard() {
             <div className="flex gap-2">
               <button
                 onClick={() => setConfirmClearFeito(false)}
-                className="flex-1 border border-neutral-300 rounded-md py-2 text-neutral-700 hover:bg-neutral-50"
+                disabled={busy === "archive"}
+                className="flex-1 border border-neutral-300 rounded-md py-2.5 sm:py-2 text-neutral-700 hover:bg-neutral-50 disabled:opacity-40"
               >
                 Cancelar
               </button>
               <button
                 onClick={archiveAllDone}
-                className="flex-1 bg-neutral-900 text-white rounded-md py-2 hover:bg-neutral-800"
+                disabled={busy === "archive"}
+                className="flex-1 bg-neutral-900 text-white rounded-md py-2.5 sm:py-2 hover:bg-neutral-800 flex items-center justify-center gap-1.5 disabled:opacity-60 disabled:cursor-wait"
               >
-                Arquivar todos
+                {busy === "archive" ? (
+                  <>
+                    <Spinner size={14} /> Arquivando…
+                  </>
+                ) : (
+                  "Arquivar todos"
+                )}
               </button>
             </div>
           </div>
@@ -1363,4 +1599,16 @@ function PixBoard() {
   );
 }
 
-ReactDOM.createRoot(document.getElementById("root")).render(<PixBoard />);
+function App() {
+  // Se o Firebase não carregou (internet caiu ou CDN fora), mostra um aviso em vez de tela branca.
+  if (!window.db) {
+    return <FalhaTela mensagem="Não foi possível conectar ao servidor. Verifique a internet e recarregue a página." />;
+  }
+  return <PixBoard />;
+}
+
+ReactDOM.createRoot(document.getElementById("root")).render(
+  <ErrorBoundary>
+    <App />
+  </ErrorBoundary>
+);
