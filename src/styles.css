@@ -6,3 +6,5 @@
 .font-mono-num { font-family: 'IBM Plex Mono', monospace; }
 .font-ui { font-family: 'Inter', sans-serif; }
 body { margin: 0; }
+.no-scrollbar { scrollbar-width: none; }
+.no-scrollbar::-webkit-scrollbar { display: none; }

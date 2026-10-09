@@ -9,6 +9,7 @@ const EMPRESAS = [
   {
     id: "leao",
     nome: "Churrascaria Leão do Parque",
+    curto: "Leão",
     pin: "1234",
     classes: {
       header: "bg-emerald-700",
@@ -23,6 +24,7 @@ const EMPRESAS = [
   {
     id: "pier49",
     nome: "Restaurante Pier 49",
+    curto: "Pier 49",
     pin: "4321",
     classes: {
       header: "bg-sky-700",
@@ -37,6 +39,7 @@ const EMPRESAS = [
   {
     id: "centro",
     nome: "Padaria Gaúcha Centro",
+    curto: "Centro",
     pin: "9874",
     classes: {
       header: "bg-amber-700",
@@ -51,6 +54,7 @@ const EMPRESAS = [
   {
     id: "cassino",
     nome: "Padaria Gaúcha Cassino",
+    curto: "Cassino",
     pin: "4789",
     classes: {
       header: "bg-stone-700",
@@ -67,6 +71,7 @@ const EMPRESAS = [
 const FEITO_COLUMN = {
   id: "feito",
   nome: "Feito",
+  curto: "Feito",
   classes: {
     header: "bg-slate-600",
     headerText: "text-slate-50",
@@ -307,6 +312,8 @@ function PixBoard() {
   const [searchQuery, setSearchQuery] = useState("");
   const [reportPeriod, setReportPeriod] = useState("all");
   const [activities, setActivities] = useState([]);
+  // No celular o quadro mostra uma coluna por vez, escolhida pelas abas.
+  const [mobileCol, setMobileCol] = useState(null);
 
   useEffect(() => {
     const unsub = window.db.collection(CARDS_COLLECTION).onSnapshot(
@@ -396,6 +403,7 @@ function PixBoard() {
     setSelectedRole(null);
     setPinInput("");
     setPage("board");
+    setMobileCol(null);
   }
 
   function canAddTo(columnId) {
@@ -710,17 +718,17 @@ function PixBoard() {
   }
 
   return (
-    <div className="font-ui w-full min-h-screen bg-neutral-50 p-4">
-      <div className="flex items-center justify-between mb-3 px-1">
-        <div>
-          <h1 className="font-display text-2xl text-neutral-900">Quadro de PIX</h1>
-          <p className="text-sm text-neutral-500">
+    <div className="font-ui w-full min-h-screen bg-neutral-50 p-3 sm:p-4">
+      <div className="flex items-center justify-between gap-3 mb-3 px-1">
+        <div className="min-w-0">
+          <h1 className="font-display text-xl sm:text-2xl text-neutral-900">Quadro de PIX</h1>
+          <p className="text-sm text-neutral-500 truncate">
             {session.type === "chefe" ? "Você está como chefe" : `Você está em ${empresaById(session.id).nome}`}
           </p>
         </div>
         <button
           onClick={handleLogout}
-          className="flex items-center gap-1 text-sm text-neutral-600 border border-neutral-300 rounded-md px-3 py-1.5 hover:bg-white"
+          className="flex-shrink-0 flex items-center gap-1 text-sm text-neutral-600 border border-neutral-300 rounded-md px-3 py-2 sm:py-1.5 hover:bg-white"
         >
           <Icon name="logout" size={14} /> Sair
         </button>
@@ -729,7 +737,7 @@ function PixBoard() {
       <div className="flex flex-wrap items-center gap-2 mb-4 px-1">
         <button
           onClick={() => setPage("board")}
-          className={`flex items-center gap-1.5 text-sm rounded-md px-3 py-1.5 ${
+          className={`flex items-center gap-1.5 text-sm rounded-md px-3 py-2 sm:py-1.5 ${
             page === "board" ? "bg-neutral-900 text-white" : "bg-white border border-neutral-300 text-neutral-600"
           }`}
         >
@@ -738,7 +746,7 @@ function PixBoard() {
         {session.type === "chefe" && (
           <button
             onClick={() => setPage("report")}
-            className={`flex items-center gap-1.5 text-sm rounded-md px-3 py-1.5 ${
+            className={`flex items-center gap-1.5 text-sm rounded-md px-3 py-2 sm:py-1.5 ${
               page === "report" ? "bg-neutral-900 text-white" : "bg-white border border-neutral-300 text-neutral-600"
             }`}
           >
@@ -748,7 +756,7 @@ function PixBoard() {
         {session.type === "chefe" && (
           <button
             onClick={() => setPage("activities")}
-            className={`flex items-center gap-1.5 text-sm rounded-md px-3 py-1.5 ${
+            className={`flex items-center gap-1.5 text-sm rounded-md px-3 py-2 sm:py-1.5 ${
               page === "activities" ? "bg-neutral-900 text-white" : "bg-white border border-neutral-300 text-neutral-600"
             }`}
           >
@@ -762,7 +770,7 @@ function PixBoard() {
               value={searchQuery}
               onChange={(e) => setSearchQuery(e.target.value)}
               placeholder="Buscar favorecido ou chave PIX"
-              className="w-full text-sm border border-neutral-300 rounded-md pl-8 pr-2.5 py-1.5 bg-white"
+              className="w-full text-base sm:text-sm border border-neutral-300 rounded-md pl-8 pr-2.5 py-2 sm:py-1.5 bg-white"
             />
           </div>
         )}
@@ -774,17 +782,41 @@ function PixBoard() {
         </div>
       )}
 
-      {page === "board" && (
-        <div className="flex gap-3 overflow-x-auto pb-2">
+      {page === "board" && (() => {
+        const activeMobileCol = mobileCol || (session.type === "empresa" ? session.id : COLUMNS[0].id);
+        const columnCards = (colId) => cards.filter((c) => c.columnId === colId && !c.archived && matchesSearch(c));
+        return (
+        <>
+        <div className="md:hidden no-scrollbar flex gap-1.5 overflow-x-auto pb-2 mb-1 -mx-3 px-3">
           {COLUMNS.map((col) => {
-            const colCards = cards.filter((c) => c.columnId === col.id && !c.archived && matchesSearch(c));
+            const active = col.id === activeMobileCol;
+            return (
+              <button
+                key={col.id}
+                onClick={() => setMobileCol(col.id)}
+                className={`flex-shrink-0 flex items-center gap-1.5 text-sm rounded-full px-3 py-2 border whitespace-nowrap ${
+                  active ? "bg-neutral-900 text-white border-neutral-900" : "bg-white text-neutral-700 border-neutral-300"
+                }`}
+              >
+                <span className={`w-2 h-2 rounded-full ${col.classes.dot}`} />
+                {col.curto}
+                <span className={`text-xs font-mono-num ${active ? "text-neutral-300" : "text-neutral-400"}`}>
+                  {columnCards(col.id).length}
+                </span>
+              </button>
+            );
+          })}
+        </div>
+        <div className="flex gap-3 md:overflow-x-auto pb-2">
+          {COLUMNS.map((col) => {
+            const colCards = columnCards(col.id);
             const isDropTarget = session.type === "chefe" && col.id === "feito";
             return (
               <div
                 key={col.id}
-                className={`flex-shrink-0 w-72 rounded-lg border ${
+                className={`${col.id === activeMobileCol ? "flex" : "hidden"} md:flex flex-col w-full md:w-72 flex-shrink-0 rounded-lg border ${
                   dragOverCol === col.id ? "border-neutral-400" : "border-neutral-200"
-                } bg-white flex flex-col max-h-[75vh]`}
+                } bg-white md:max-h-[75vh]`}
                 onDragOver={(e) => {
                   if (isDropTarget) {
                     e.preventDefault();
@@ -811,7 +843,7 @@ function PixBoard() {
                     <button
                       onClick={() => openAddForm(col.id)}
                       aria-label={`Adicionar PIX em ${col.nome}`}
-                      className="bg-white/15 hover:bg-white/25 rounded-md p-1.5"
+                      className="bg-white/15 hover:bg-white/25 rounded-md p-2 md:p-1.5"
                     >
                       <Icon name="plus" size={16} />
                     </button>
@@ -820,7 +852,7 @@ function PixBoard() {
                     <button
                       onClick={() => setConfirmClearFeito(true)}
                       aria-label="Arquivar todos os feitos"
-                      className="bg-white/15 hover:bg-white/25 rounded-md p-1.5"
+                      className="bg-white/15 hover:bg-white/25 rounded-md p-2 md:p-1.5"
                     >
                       <Icon name="archive" size={16} />
                     </button>
@@ -840,26 +872,26 @@ function PixBoard() {
                         placeholder="Chave PIX"
                         value={draft.chavePix}
                         onChange={(e) => setDraft({ ...draft, chavePix: e.target.value })}
-                        className="w-full text-sm border border-neutral-300 rounded px-2 py-1.5 mb-1.5"
+                        className="w-full text-base sm:text-sm border border-neutral-300 rounded px-2 py-2 sm:py-1.5 mb-1.5"
                       />
                       <input
                         placeholder="Favorecido"
                         value={draft.favorecido}
                         onChange={(e) => setDraft({ ...draft, favorecido: e.target.value })}
-                        className="w-full text-sm border border-neutral-300 rounded px-2 py-1.5 mb-1.5"
+                        className="w-full text-base sm:text-sm border border-neutral-300 rounded px-2 py-2 sm:py-1.5 mb-1.5"
                       />
                       <input
                         placeholder="Descrição"
                         value={draft.descricao}
                         onChange={(e) => setDraft({ ...draft, descricao: e.target.value })}
-                        className="w-full text-sm border border-neutral-300 rounded px-2 py-1.5 mb-1.5"
+                        className="w-full text-base sm:text-sm border border-neutral-300 rounded px-2 py-2 sm:py-1.5 mb-1.5"
                       />
                       <input
                         placeholder="Valor (ex: 150,00)"
                         inputMode="decimal"
                         value={draft.valor}
                         onChange={(e) => setDraft({ ...draft, valor: e.target.value })}
-                        className="w-full text-sm border border-neutral-300 rounded px-2 py-1.5 mb-1.5 font-mono-num"
+                        className="w-full text-base sm:text-sm border border-neutral-300 rounded px-2 py-2 sm:py-1.5 mb-1.5 font-mono-num"
                       />
                       <p className="text-xs text-neutral-500 mb-1">Comprovante</p>
                       <div className="flex gap-1.5 mb-1.5">
@@ -919,26 +951,26 @@ function PixBoard() {
                               placeholder="Chave PIX"
                               value={editDraft.chavePix}
                               onChange={(e) => setEditDraft({ ...editDraft, chavePix: e.target.value })}
-                              className="w-full text-sm border border-neutral-300 rounded px-2 py-1.5 mb-1.5"
+                              className="w-full text-base sm:text-sm border border-neutral-300 rounded px-2 py-2 sm:py-1.5 mb-1.5"
                             />
                             <input
                               placeholder="Favorecido"
                               value={editDraft.favorecido}
                               onChange={(e) => setEditDraft({ ...editDraft, favorecido: e.target.value })}
-                              className="w-full text-sm border border-neutral-300 rounded px-2 py-1.5 mb-1.5"
+                              className="w-full text-base sm:text-sm border border-neutral-300 rounded px-2 py-2 sm:py-1.5 mb-1.5"
                             />
                             <input
                               placeholder="Descrição"
                               value={editDraft.descricao}
                               onChange={(e) => setEditDraft({ ...editDraft, descricao: e.target.value })}
-                              className="w-full text-sm border border-neutral-300 rounded px-2 py-1.5 mb-1.5"
+                              className="w-full text-base sm:text-sm border border-neutral-300 rounded px-2 py-2 sm:py-1.5 mb-1.5"
                             />
                             <input
                               placeholder="Valor (ex: 150,00)"
                               inputMode="decimal"
                               value={editDraft.valor}
                               onChange={(e) => setEditDraft({ ...editDraft, valor: e.target.value })}
-                              className="w-full text-sm border border-neutral-300 rounded px-2 py-1.5 mb-1.5 font-mono-num"
+                              className="w-full text-base sm:text-sm border border-neutral-300 rounded px-2 py-2 sm:py-1.5 mb-1.5 font-mono-num"
                             />
                             <p className="text-xs text-neutral-500 mb-1">Comprovante</p>
                             <div className="flex gap-1.5 mb-1.5">
@@ -985,7 +1017,7 @@ function PixBoard() {
                           <>
                             <div className="flex justify-between items-start mb-1">
                               <span className={`text-[11px] px-1.5 py-0.5 rounded ${origem ? origem.classes.badge : col.classes.badge}`}>
-                                {origem ? origem.nome.split(" ")[0] : "Feito"}
+                                {origem ? origem.curto : "Feito"}
                               </span>
                               <span className="text-[11px] text-neutral-400 font-mono-num">{formatDate(card.createdAt)}</span>
                             </div>
@@ -1005,31 +1037,31 @@ function PixBoard() {
                               <button
                                 onClick={() => copyPix(card.id, card.chavePix)}
                                 aria-label="Copiar chave Pix"
-                                className="flex-shrink-0 mt-0.5 text-neutral-400 hover:text-neutral-700"
+                                className="flex-shrink-0 -m-1.5 p-1.5 md:m-0 md:p-0 md:mt-0.5 text-neutral-400 hover:text-neutral-700"
                               >
-                                {copiedId === card.id ? <Icon name="check" size={14} /> : <Icon name="copy" size={14} />}
+                                {copiedId === card.id ? <Icon name="check" size={18} className="md:w-3.5 md:h-3.5" /> : <Icon name="copy" size={18} className="md:w-3.5 md:h-3.5" />}
                               </button>
                             </div>
                             <p className={`font-mono-num text-lg font-medium ${col.classes.cardAccent} mt-1`}>{formatMoney(card.valor)}</p>
-                            <div className="flex items-center justify-end gap-3 mt-1.5">
+                            <div className="flex items-center justify-end gap-1 md:gap-3 mt-1.5">
                               {canEdit(card) && (
                                 <button
                                   onClick={() => startEdit(card)}
-                                  className="text-[11px] text-neutral-500 hover:text-neutral-800 font-medium"
+                                  className="text-sm md:text-[11px] px-2 py-1.5 md:p-0 text-neutral-500 hover:text-neutral-800 font-medium"
                                 >
                                   Editar
                                 </button>
                               )}
                               {session.type === "chefe" && (
-                                <button onClick={() => setConfirmDeleteId(card.id)} aria-label="Excluir card">
-                                  <Icon name="trash" size={13} className="text-neutral-400 hover:text-red-600" />
+                                <button onClick={() => setConfirmDeleteId(card.id)} aria-label="Excluir card" className="p-1.5 md:p-0">
+                                  <Icon name="trash" size={16} className="md:w-[13px] md:h-[13px] text-neutral-400 hover:text-red-600" />
                                 </button>
                               )}
                             </div>
                             {session.type === "chefe" && card.columnId !== "feito" && (
                               <button
                                 onClick={() => markAsDone(card.id)}
-                                className={`w-full mt-2 text-white text-xs font-medium rounded py-1.5 ${FEITO_COLUMN.classes.btn}`}
+                                className={`w-full mt-2 text-white text-sm md:text-xs font-medium rounded py-2.5 md:py-1.5 ${FEITO_COLUMN.classes.btn}`}
                               >
                                 Marcar como Feito
                               </button>
@@ -1037,9 +1069,9 @@ function PixBoard() {
                             {session.type === "chefe" && card.columnId === "feito" && origem && (
                               <button
                                 onClick={() => moveCard(card.id, card.origemId)}
-                                className={`w-full mt-2 text-xs font-medium rounded py-1.5 border ${origem.classes.badge}`}
+                                className={`w-full mt-2 text-sm md:text-xs font-medium rounded py-2.5 md:py-1.5 border ${origem.classes.badge}`}
                               >
-                                Devolver para {origem.nome.split(" ")[0]}
+                                Devolver para {origem.curto}
                               </button>
                             )}
                           </>
@@ -1052,10 +1084,12 @@ function PixBoard() {
             );
           })}
         </div>
-      )}
+        </>
+        );
+      })()}
 
       {page === "report" && session.type === "chefe" && (
-        <div className="pb-4">
+        <div className="pb-20">
           {(() => {
             const relevantEmpresas = EMPRESAS;
             const cutoff = periodCutoff();
@@ -1084,7 +1118,7 @@ function PixBoard() {
                       <button
                         key={opt.id}
                         onClick={() => setReportPeriod(opt.id)}
-                        className={`text-xs rounded-md px-2.5 py-1.5 border ${
+                        className={`text-xs rounded-md px-2.5 py-2 sm:py-1.5 border whitespace-nowrap ${
                           reportPeriod === opt.id
                             ? "bg-neutral-900 text-white border-neutral-900"
                             : "bg-white text-neutral-600 border-neutral-300"
@@ -1097,7 +1131,7 @@ function PixBoard() {
                   <button
                     onClick={() => downloadCsv(relevantCards, "relatorio-pix")}
                     disabled={relevantCards.length === 0}
-                    className="flex items-center gap-1.5 text-xs rounded-md px-2.5 py-1.5 border bg-white text-neutral-700 border-neutral-300 hover:bg-neutral-50 disabled:opacity-40"
+                    className="flex items-center gap-1.5 text-xs rounded-md px-2.5 py-2 sm:py-1.5 border bg-white text-neutral-700 border-neutral-300 hover:bg-neutral-50 disabled:opacity-40"
                   >
                     <Icon name="download" size={13} /> Exportar CSV
                   </button>
@@ -1107,12 +1141,12 @@ function PixBoard() {
                       value={searchQuery}
                       onChange={(e) => setSearchQuery(e.target.value)}
                       placeholder="Buscar favorecido ou chave PIX"
-                      className="w-full text-sm border border-neutral-300 rounded-md pl-8 pr-2.5 py-1.5 bg-white"
+                      className="w-full text-base sm:text-sm border border-neutral-300 rounded-md pl-8 pr-2.5 py-2 sm:py-1.5 bg-white"
                     />
                   </div>
                 </div>
 
-                <div className="grid grid-cols-2 sm:grid-cols-4 gap-2 mb-4">
+                <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-5 gap-2 mb-4">
                   {relevantEmpresas.map((emp) => {
                     const empCards = relevantCards.filter((c) => c.origemId === emp.id);
                     const empTotal = empCards.reduce((sum, c) => sum + Number(c.valor || 0), 0);
@@ -1122,14 +1156,14 @@ function PixBoard() {
                           <span className={`w-2 h-2 rounded-full ${emp.classes.dot}`} />
                           <p className="text-xs text-neutral-500 leading-tight">{emp.nome}</p>
                         </div>
-                        <p className="font-mono-num text-lg font-medium text-neutral-900">{formatMoney(empTotal)}</p>
+                        <p className="font-mono-num text-base sm:text-lg font-medium text-neutral-900 break-all">{formatMoney(empTotal)}</p>
                         <p className="text-[11px] text-neutral-400">{empCards.length} PIX</p>
                       </div>
                     );
                   })}
-                  <div className="bg-neutral-900 rounded-lg p-3">
+                  <div className="col-span-2 sm:col-span-1 bg-neutral-900 rounded-lg p-3">
                     <p className="text-xs text-neutral-300 mb-1">Total geral</p>
-                    <p className="font-mono-num text-lg font-medium text-white">{formatMoney(grandTotal)}</p>
+                    <p className="font-mono-num text-lg font-medium text-white break-all">{formatMoney(grandTotal)}</p>
                     <p className="text-[11px] text-neutral-400">{relevantCards.length} PIX</p>
                   </div>
                 </div>
@@ -1142,7 +1176,7 @@ function PixBoard() {
                     const origem = empresaById(card.origemId);
                     const status = statusLabel(card);
                     return (
-                      <div key={card.id} className="flex items-center justify-between gap-3 px-4 py-2.5 border-b border-neutral-100 last:border-0">
+                      <div key={card.id} className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-1.5 sm:gap-3 px-3 sm:px-4 py-2.5 border-b border-neutral-100 last:border-0">
                         <div className="min-w-0">
                           <div className="flex items-center gap-1.5 mb-0.5">
                             {origem && <span className={`w-1.5 h-1.5 rounded-full ${origem.classes.dot}`} />}
@@ -1154,7 +1188,7 @@ function PixBoard() {
                             {card.descricao ? ` · ${card.descricao}` : ""}
                           </p>
                         </div>
-                        <div className="flex items-center gap-2 flex-shrink-0">
+                        <div className="flex items-center justify-between sm:justify-end gap-2 flex-shrink-0">
                           <span className={`text-[11px] px-1.5 py-0.5 rounded ${status.className}`}>{status.text}</span>
                           <span className="font-mono-num text-sm font-medium text-neutral-900">{formatMoney(card.valor)}</span>
                         </div>
@@ -1174,7 +1208,7 @@ function PixBoard() {
             <p className="text-sm text-neutral-400 text-center py-10">Nenhuma atividade registrada ainda.</p>
           )}
           {activities.map((act) => (
-            <div key={act.id} className="flex items-start gap-3 px-4 py-2.5 border-b border-neutral-100 last:border-0">
+            <div key={act.id} className="flex items-start gap-3 px-3 sm:px-4 py-2.5 border-b border-neutral-100 last:border-0">
               <span className="mt-0.5 text-neutral-400 flex-shrink-0">
                 <Icon name={activityIcon(act.acao)} size={14} />
               </span>
@@ -1192,7 +1226,7 @@ function PixBoard() {
       {page === "report" && session.type === "chefe" && (
         <button
           onClick={openResetConfirm}
-          className="fixed bottom-5 right-5 flex items-center gap-1.5 bg-red-600 hover:bg-red-700 text-white text-sm font-medium rounded-full px-4 py-2.5 shadow-lg z-40"
+          className="fixed bottom-4 right-4 sm:bottom-5 sm:right-5 flex items-center gap-1.5 bg-red-600 hover:bg-red-700 text-white text-sm font-medium rounded-full px-4 py-2.5 shadow-lg z-40"
         >
           <Icon name="trash" size={14} /> Zerar relatórios
         </button>
