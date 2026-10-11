@@ -1,0 +1,55 @@
+rules_version = '2';
+
+// Regras do Firestore do Quadro de PIX.
+// Este arquivo é a cópia guardada no repositório: o que vale é o que estiver publicado
+// no console do Firebase (Firestore Database > Regras). Cole este texto lá.
+//
+// Só entra quem fez login com uma das contas abaixo (Authentication > Users).
+// Os e-mails precisam ser iguais aos de EMPRESAS e CHEFE_EMAIL em src/app.jsx.
+
+service cloud.firestore {
+  match /databases/{database}/documents {
+
+    function email() {
+      return request.auth != null ? request.auth.token.email : '';
+    }
+    function chefe() {
+      return email() == 'chefe@quadro-pix.firebaseapp.com';
+    }
+    // id do estabelecimento da conta logada, ou '' se não for de um estabelecimento
+    function empresa() {
+      return {
+        'leao@quadro-pix.firebaseapp.com': 'leao',
+        'pier49@quadro-pix.firebaseapp.com': 'pier49',
+        'centro@quadro-pix.firebaseapp.com': 'centro',
+        'cassino@quadro-pix.firebaseapp.com': 'cassino'
+      }.get(email(), '');
+    }
+    function logado() {
+      return chefe() || empresa() != '';
+    }
+
+    match /cards/{id} {
+      allow read: if logado();
+      // O chefe faz tudo. Cada estabelecimento só cria e edita os PIX da própria
+      // coluna, e não pode mudá-los de coluna (marcar como feito é do chefe).
+      allow create: if chefe() || (empresa() != ''
+        && request.resource.data.origemId == empresa()
+        && request.resource.data.columnId == empresa());
+      allow update: if chefe() || (empresa() != ''
+        && resource.data.origemId == empresa()
+        && resource.data.columnId == empresa()
+        && request.resource.data.origemId == empresa()
+        && request.resource.data.columnId == empresa());
+      allow delete: if chefe();
+    }
+
+    // Histórico de atividades: todos registram, só o chefe lê, ninguém apaga.
+    match /audit_log/{id} {
+      allow create: if logado();
+      allow read: if chefe();
+    }
+
+    // qualquer outro caminho fica fechado
+  }
+}

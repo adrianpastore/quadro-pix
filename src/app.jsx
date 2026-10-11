@@ -10,7 +10,7 @@ const EMPRESAS = [
     id: "leao",
     nome: "Churrascaria Leão do Parque",
     curto: "Leão",
-    pin: "1234",
+    email: "leao@quadro-pix.firebaseapp.com",
     classes: {
       header: "bg-emerald-700",
       headerText: "text-emerald-50",
@@ -25,7 +25,7 @@ const EMPRESAS = [
     id: "pier49",
     nome: "Restaurante Pier 49",
     curto: "Pier 49",
-    pin: "4321",
+    email: "pier49@quadro-pix.firebaseapp.com",
     classes: {
       header: "bg-sky-700",
       headerText: "text-sky-50",
@@ -40,7 +40,7 @@ const EMPRESAS = [
     id: "centro",
     nome: "Padaria Gaúcha Centro",
     curto: "Centro",
-    pin: "9874",
+    email: "centro@quadro-pix.firebaseapp.com",
     classes: {
       header: "bg-amber-700",
       headerText: "text-amber-50",
@@ -55,7 +55,7 @@ const EMPRESAS = [
     id: "cassino",
     nome: "Padaria Gaúcha Cassino",
     curto: "Cassino",
-    pin: "4789",
+    email: "cassino@quadro-pix.firebaseapp.com",
     classes: {
       header: "bg-stone-700",
       headerText: "text-stone-50",
@@ -84,7 +84,17 @@ const FEITO_COLUMN = {
 };
 
 const COLUMNS = [...EMPRESAS, FEITO_COLUMN];
-const CHEFE_PIN = "2707";
+// Cada estabelecimento e o chefe entram com uma conta do Firebase Authentication
+// (e-mail e senha). As contas são criadas no console do Firebase com estes e-mails,
+// que não precisam existir de verdade; o firestore.rules usa a mesma lista.
+const CHEFE_EMAIL = "chefe@quadro-pix.firebaseapp.com";
+
+function papelDoEmail(email) {
+  const e = (email || "").toLowerCase();
+  if (e === CHEFE_EMAIL) return { type: "chefe" };
+  const emp = EMPRESAS.find((x) => x.email === e);
+  return emp ? { type: "empresa", id: emp.id } : null;
+}
 
 function empresaById(id) {
   return EMPRESAS.find((e) => e.id === id);
@@ -366,22 +376,32 @@ class ErrorBoundary extends React.Component {
   }
 }
 
-function loadSession() {
-  try {
-    const raw = localStorage.getItem(SESSION_KEY);
-    return raw ? JSON.parse(raw) : null;
-  } catch (e) {
-    return null;
+function authErro(code) {
+  switch (code) {
+    case "auth/invalid-credential":
+    case "auth/wrong-password":
+    case "auth/user-not-found":
+    case "auth/invalid-login-credentials":
+      return "Senha incorreta.";
+    case "auth/too-many-requests":
+      return "Muitas tentativas. Espere alguns minutos e tente de novo.";
+    case "auth/network-request-failed":
+      return "Sem conexão com a internet.";
+    default:
+      return "Não foi possível entrar. Tente de novo.";
   }
 }
 
 function PixBoard() {
-  const [session, setSession] = useState(loadSession);
+  // undefined enquanto o Firebase confere se já há alguém logado neste aparelho.
+  const [authUser, setAuthUser] = useState(undefined);
+  const session = authUser ? papelDoEmail(authUser.email) : null;
   const [cards, setCards] = useState([]);
   const [loading, setLoading] = useState(true);
   const [loadError, setLoadError] = useState("");
   const [selectedRole, setSelectedRole] = useState(null);
-  const [pinInput, setPinInput] = useState("");
+  const [senhaInput, setSenhaInput] = useState("");
+  const [entrando, setEntrando] = useState(false);
   const [loginError, setLoginError] = useState("");
   const [openForm, setOpenForm] = useState(null);
   const [draft, setDraft] = useState({ chavePix: "", favorecido: "", descricao: "", valor: "", comprovante: null });
@@ -411,6 +431,25 @@ function PixBoard() {
   const [online, setOnline] = useState(() => (typeof navigator === "undefined" ? true : navigator.onLine !== false));
 
   useEffect(() => {
+    // O login fica guardado no aparelho pelo Firebase: quem já entrou não digita de novo.
+    try { localStorage.removeItem(SESSION_KEY); } catch (e) {}
+    return window.auth.onAuthStateChanged((u) => {
+      if (u && !papelDoEmail(u.email)) {
+        setLoginError("Esta conta não tem acesso ao quadro.");
+        window.auth.signOut();
+        return;
+      }
+      setAuthUser(u);
+    });
+  }, []);
+
+  useEffect(() => {
+    if (!session) {
+      setCards([]);
+      setLoading(authUser === undefined);
+      return;
+    }
+    setLoading(true);
     const unsub = window.db.collection(CARDS_COLLECTION).onSnapshot(
       (snapshot) => {
         const list = snapshot.docs.map((d) => ({ id: d.id, ...d.data() }));
@@ -427,7 +466,7 @@ function PixBoard() {
       }
     );
     return () => unsub();
-  }, []);
+  }, [authUser]);
 
   useEffect(() => {
     const goOnline = () => setOnline(true);
@@ -461,7 +500,7 @@ function PixBoard() {
         }
       );
     return () => unsub();
-  }, [session]);
+  }, [authUser]);
 
   function atorAtual() {
     if (!session) return "Desconhecido";
@@ -483,41 +522,30 @@ function PixBoard() {
     }
   }
 
-  useEffect(() => {
-    try {
-      if (session) localStorage.setItem(SESSION_KEY, JSON.stringify(session));
-      else localStorage.removeItem(SESSION_KEY);
-    } catch (e) {}
-  }, [session]);
-
   function handleSelectRole(role) {
     setSelectedRole(role);
-    setPinInput("");
+    setSenhaInput("");
     setLoginError("");
   }
 
-  function handleLoginSubmit() {
-    if (!selectedRole) return;
-    if (selectedRole.type === "chefe") {
-      if (pinInput === CHEFE_PIN) {
-        setSession({ type: "chefe" });
-      } else {
-        setLoginError("PIN incorreto.");
-      }
-    } else {
-      const empresa = empresaById(selectedRole.id);
-      if (empresa && pinInput === empresa.pin) {
-        setSession({ type: "empresa", id: empresa.id });
-      } else {
-        setLoginError("PIN incorreto.");
-      }
+  async function handleLoginSubmit() {
+    if (!selectedRole || entrando || !senhaInput) return;
+    const email = selectedRole.type === "chefe" ? CHEFE_EMAIL : empresaById(selectedRole.id).email;
+    setEntrando(true);
+    try {
+      await window.auth.signInWithEmailAndPassword(email, senhaInput);
+      setSenhaInput("");
+    } catch (err) {
+      setLoginError(authErro(err && err.code));
+    } finally {
+      setEntrando(false);
     }
   }
 
   function handleLogout() {
-    setSession(null);
+    window.auth.signOut();
     setSelectedRole(null);
-    setPinInput("");
+    setSenhaInput("");
     setPage("board");
     setMobileCol(null);
   }
@@ -806,26 +834,25 @@ function PixBoard() {
               <p className="text-sm text-neutral-500 mb-3">
                 {selectedRole.type === "chefe" ? "Chefe" : empresaById(selectedRole.id).nome}
               </p>
-              <label className="block text-sm text-neutral-700 mb-1">PIN</label>
+              <label htmlFor="senha" className="block text-sm text-neutral-700 mb-1">Senha</label>
               <input
-                type="tel"
-                inputMode="numeric"
-                pattern="[0-9]*"
-                autoComplete="off"
-                maxLength={8}
-                value={pinInput}
+                id="senha"
+                type="password"
+                autoComplete="current-password"
+                value={senhaInput}
                 onChange={(ev) => {
-                  setPinInput(ev.target.value.replace(/[^0-9]/g, ""));
+                  setSenhaInput(ev.target.value);
                   setLoginError("");
                 }}
                 onKeyDown={(ev) => {
                   if (ev.key === "Enter") handleLoginSubmit();
                 }}
                 aria-invalid={loginError ? "true" : undefined}
-                className={`w-full border rounded-md px-3 py-2 mb-2 tracking-widest text-lg font-mono-num ${
+                className={`w-full border rounded-md px-3 py-2 mb-2 text-lg ${
                   loginError ? "border-red-500 bg-red-50" : "border-neutral-300"
                 }`}
-                placeholder="Digite o PIN"
+                placeholder="Digite a senha"
+                autoFocus
               />
               {loginError && <p className="text-sm text-red-600 mb-2">{loginError}</p>}
               <div className="flex gap-2 mt-3">
@@ -839,9 +866,10 @@ function PixBoard() {
                 <button
                   type="button"
                   onClick={handleLoginSubmit}
-                  className="flex-1 bg-neutral-900 text-white rounded-md py-2 hover:bg-neutral-800 flex items-center justify-center gap-1"
+                  disabled={entrando}
+                  className="flex-1 bg-neutral-900 text-white rounded-md py-2 hover:bg-neutral-800 flex items-center justify-center gap-1 disabled:opacity-60"
                 >
-                  Entrar <Icon name="arrow-right" size={16} />
+                  {entrando ? <><Spinner size={14} /> Entrando…</> : <>Entrar <Icon name="arrow-right" size={16} /></>}
                 </button>
               </div>
             </div>
