@@ -36,10 +36,12 @@ for (const [account, expected] of accounts) {
 for (const email of ['desconhecido@quadro-pix.firebaseapp.com', 'chefe@example.com', '', null, undefined]) {
   test(`papelDoEmail rejects ${String(email)}`, () => assert.equal(papelDoEmail(email), null));
 }
-for (const code of ['auth/invalid-credential', 'auth/wrong-password', 'auth/user-not-found', 'auth/invalid-login-credentials']) {
+for (const code of ['auth/invalid-credential', 'auth/wrong-password', 'auth/invalid-login-credentials']) {
   test(`authErro: ${code}`, () => assert.equal(authErro(code), 'Senha incorreta.'));
 }
 for (const [code, expected] of [
+  ['auth/user-not-found', 'Conta não encontrada. Fale com o responsável.'],
+  ['auth/user-disabled', 'Esta conta foi desativada. Fale com o responsável.'],
   ['auth/too-many-requests', 'Muitas tentativas. Espere alguns minutos e tente de novo.'],
   ['auth/network-request-failed', 'Sem conexão com a internet.'],
   ['auth/unknown', 'Não foi possível entrar. Tente de novo.'],

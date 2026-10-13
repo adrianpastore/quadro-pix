@@ -380,9 +380,12 @@ function authErro(code) {
   switch (code) {
     case "auth/invalid-credential":
     case "auth/wrong-password":
-    case "auth/user-not-found":
     case "auth/invalid-login-credentials":
       return "Senha incorreta.";
+    case "auth/user-not-found":
+      return "Conta não encontrada. Fale com o responsável.";
+    case "auth/user-disabled":
+      return "Esta conta foi desativada. Fale com o responsável.";
     case "auth/too-many-requests":
       return "Muitas tentativas. Espere alguns minutos e tente de novo.";
     case "auth/network-request-failed":
@@ -390,6 +393,12 @@ function authErro(code) {
     default:
       return "Não foi possível entrar. Tente de novo.";
   }
+}
+
+function erroGravacao(error, mensagem) {
+  return error && error.code === "permission-denied"
+    ? "Sem permissão para alterar este PIX."
+    : mensagem;
 }
 
 function PixBoard() {
@@ -415,6 +424,7 @@ function PixBoard() {
   const [editingCardId, setEditingCardId] = useState(null);
   const [editDraft, setEditDraft] = useState({ chavePix: "", favorecido: "", descricao: "", valor: "", comprovante: null });
   const [editErrors, setEditErrors] = useState({});
+  const [editNotice, setEditNotice] = useState("");
   const [page, setPage] = useState("board");
   const [searchQuery, setSearchQuery] = useState("");
   // "current" = mês atual, "all" = todos os meses, ou "AAAA-MM" de um mês arquivado.
@@ -446,12 +456,19 @@ function PixBoard() {
   useEffect(() => {
     if (!session) {
       setCards([]);
+      setLoadError("");
+      setSyncFailed(false);
+      setEditingCardId(null);
+      setEditNotice("");
       setLoading(authUser === undefined);
       return;
     }
     setLoading(true);
+    let active = true;
+    const stillSignedIn = () => active && window.auth.currentUser && window.auth.currentUser.uid === authUser.uid;
     const unsub = window.db.collection(CARDS_COLLECTION).onSnapshot(
       (snapshot) => {
+        if (!stillSignedIn()) return;
         const list = snapshot.docs.map((d) => ({ id: d.id, ...d.data() }));
         setCards(list);
         setLoading(false);
@@ -459,13 +476,17 @@ function PixBoard() {
         setSyncFailed(false);
       },
       (err) => {
+        if (!stillSignedIn()) return;
         console.error(err);
         setLoadError("Não foi possível conectar ao servidor. Verifique a internet e recarregue a página.");
         setSyncFailed(true);
         setLoading(false);
       }
     );
-    return () => unsub();
+    return () => {
+      active = false;
+      unsub();
+    };
   }, [authUser]);
 
   useEffect(() => {
@@ -483,24 +504,41 @@ function PixBoard() {
     if (!session || session.type !== "chefe") return;
     setActivitiesLoading(true);
     setActivitiesError("");
+    let active = true;
+    const stillSignedIn = () => active && window.auth.currentUser && window.auth.currentUser.uid === authUser.uid;
     const unsub = window.db
       .collection(ACTIVITY_COLLECTION)
       .orderBy("em", "desc")
       .limit(200)
       .onSnapshot(
         (snapshot) => {
+          if (!stillSignedIn()) return;
           setActivities(snapshot.docs.map((d) => ({ id: d.id, ...d.data() })));
           setActivitiesLoading(false);
           setActivitiesError("");
         },
         (err) => {
+          if (!stillSignedIn()) return;
           console.error(err);
           setActivitiesError("Não foi possível carregar as atividades. Verifique a internet e recarregue a página.");
           setActivitiesLoading(false);
         }
       );
-    return () => unsub();
+    return () => {
+      active = false;
+      unsub();
+    };
   }, [authUser]);
+
+  useEffect(() => {
+    if (!session || !editingCardId) return;
+    const card = cards.find((c) => c.id === editingCardId);
+    if (!card || !canEdit(card)) {
+      setEditingCardId(null);
+      setEditErrors({});
+      setEditNotice("Este PIX foi alterado pelo chefe");
+    }
+  }, [cards, editingCardId, authUser]);
 
   function atorAtual() {
     if (!session) return "Desconhecido";
@@ -598,7 +636,7 @@ function PixBoard() {
       setLoadError("");
       logActivity("criar", `Novo PIX para ${newCard.favorecido} · ${formatMoney(newCard.valor)}`);
     } catch (e) {
-      setFormErrors({ geral: "Não foi possível salvar agora. Verifique a internet e tente novamente." });
+      setFormErrors({ geral: erroGravacao(e, "Não foi possível salvar agora. Verifique a internet e tente novamente.") });
     } finally {
       setBusy(null);
     }
@@ -626,7 +664,7 @@ function PixBoard() {
         }
       }
     } catch (e) {
-      setLoadError("Não foi possível mover o card agora. Verifique a internet e tente novamente.");
+      setLoadError(erroGravacao(e, "Não foi possível mover o card agora. Verifique a internet e tente novamente."));
     } finally {
       setMovingIds((ids) => ids.filter((x) => x !== cardId));
     }
@@ -647,7 +685,7 @@ function PixBoard() {
         logActivity("excluir", `Excluiu o PIX de ${card.favorecido} · ${formatMoney(card.valor)}`);
       }
     } catch (e) {
-      setLoadError("Não foi possível excluir agora. Verifique a internet e tente novamente.");
+      setLoadError(erroGravacao(e, "Não foi possível excluir agora. Verifique a internet e tente novamente."));
     } finally {
       setBusy(null);
       setConfirmDeleteId(null);
@@ -661,6 +699,7 @@ function PixBoard() {
   }
 
   function startEdit(card) {
+    setEditNotice("");
     setEditingCardId(card.id);
     setEditDraft({
       chavePix: card.chavePix,
@@ -679,6 +718,12 @@ function PixBoard() {
 
   async function submitEdit(cardId) {
     if (busy) return;
+    const card = cards.find((c) => c.id === cardId);
+    if (!card || !canEdit(card)) {
+      cancelEdit();
+      setEditNotice("Este PIX foi alterado pelo chefe");
+      return;
+    }
     const { errors, numeric } = validatePix(editDraft, false);
     if (Object.keys(errors).length > 0) {
       setEditErrors(errors);
@@ -696,7 +741,7 @@ function PixBoard() {
       setEditingCardId(null);
       logActivity("editar", `Editou o PIX de ${editDraft.favorecido.trim()} · ${formatMoney(numeric)}`);
     } catch (e) {
-      setEditErrors({ geral: "Não foi possível salvar agora. Verifique a internet e tente novamente." });
+      setEditErrors({ geral: erroGravacao(e, "Não foi possível salvar agora. Verifique a internet e tente novamente.") });
     } finally {
       setBusy(null);
     }
@@ -714,7 +759,7 @@ function PixBoard() {
       );
       if (alvo.length > 0) logActivity("arquivar", `Arquivou ${alvo.length} PIX concluídos`);
     } catch (e) {
-      setLoadError("Não foi possível arquivar agora. Verifique a internet e tente novamente.");
+      setLoadError(erroGravacao(e, "Não foi possível arquivar agora. Verifique a internet e tente novamente."));
     } finally {
       setBusy(null);
       setConfirmClearFeito(false);
@@ -730,7 +775,7 @@ function PixBoard() {
       await commitInChunks(alvo, (batch, c) => batch.delete(window.db.collection(CARDS_COLLECTION).doc(c.id)));
       if (alvo.length > 0) logActivity("zerar", `Zerou todos os relatórios (${alvo.length} PIX apagados)`);
     } catch (e) {
-      setLoadError("Não foi possível zerar tudo. Alguns PIX podem não ter sido apagados; tente de novo.");
+      setLoadError(erroGravacao(e, "Não foi possível zerar tudo. Alguns PIX podem não ter sido apagados; tente de novo."));
     } finally {
       setBusy(null);
       setConfirmResetReport(false);
@@ -830,10 +875,26 @@ function PixBoard() {
               </button>
             </div>
           ) : (
-            <div className="bg-white border border-neutral-200 rounded-lg p-5">
+            <form
+              onSubmit={(ev) => {
+                ev.preventDefault();
+                handleLoginSubmit();
+              }}
+              className="bg-white border border-neutral-200 rounded-lg p-5"
+            >
               <p className="text-sm text-neutral-500 mb-3">
                 {selectedRole.type === "chefe" ? "Chefe" : empresaById(selectedRole.id).nome}
               </p>
+              <input
+                type="email"
+                name="username"
+                autoComplete="username"
+                value={selectedRole.type === "chefe" ? CHEFE_EMAIL : empresaById(selectedRole.id).email}
+                readOnly
+                className="sr-only"
+                tabIndex={-1}
+                aria-label="E-mail da conta"
+              />
               <label htmlFor="senha" className="block text-sm text-neutral-700 mb-1">Senha</label>
               <input
                 id="senha"
@@ -843,9 +904,6 @@ function PixBoard() {
                 onChange={(ev) => {
                   setSenhaInput(ev.target.value);
                   setLoginError("");
-                }}
-                onKeyDown={(ev) => {
-                  if (ev.key === "Enter") handleLoginSubmit();
                 }}
                 aria-invalid={loginError ? "true" : undefined}
                 className={`w-full border rounded-md px-3 py-2 mb-2 text-lg ${
@@ -864,15 +922,14 @@ function PixBoard() {
                   Voltar
                 </button>
                 <button
-                  type="button"
-                  onClick={handleLoginSubmit}
+                  type="submit"
                   disabled={entrando}
                   className="flex-1 bg-neutral-900 text-white rounded-md py-2 hover:bg-neutral-800 flex items-center justify-center gap-1 disabled:opacity-60"
                 >
                   {entrando ? <><Spinner size={14} /> Entrando…</> : <>Entrar <Icon name="arrow-right" size={16} /></>}
                 </button>
               </div>
-            </div>
+            </form>
           )}
         </div>
       </div>
@@ -941,6 +998,12 @@ function PixBoard() {
       {!online && (
         <div className="mb-3 mx-1 text-sm text-amber-800 bg-amber-50 border border-amber-200 rounded-md px-3 py-2" role="alert">
           Sem conexão com a internet. O que você fizer agora só será salvo quando a conexão voltar.
+        </div>
+      )}
+
+      {editNotice && (
+        <div className="mb-3 mx-1 text-sm text-amber-800 bg-amber-50 border border-amber-200 rounded-md px-3 py-2" role="status">
+          {editNotice}
         </div>
       )}
 
@@ -1136,7 +1199,7 @@ function PixBoard() {
 
                   {colCards.map((card) => {
                     const origem = empresaById(card.origemId);
-                    const isEditing = editingCardId === card.id;
+                    const isEditing = editingCardId === card.id && canEdit(card);
                     return (
                       <div
                         key={card.id}
