@@ -5,13 +5,15 @@ rules_version = '2';
 // no console do Firebase (Firestore Database > Regras). Cole este texto lá.
 //
 // Só entra quem fez login com uma das contas abaixo (Authentication > Users).
-// Os e-mails precisam ser iguais aos de EMPRESAS e CHEFE_EMAIL em src/app.jsx.
+// Os e-mails precisam ser iguais aos de EMPRESAS e CHEFE_EMAIL em src/app.jsx
+// (sem diferença de maiúsculas, como no app).
 
 service cloud.firestore {
   match /databases/{database}/documents {
 
     function email() {
-      return request.auth != null ? request.auth.token.email : '';
+      return request.auth != null && request.auth.token.email is string
+        ? request.auth.token.email.lower() : '';
     }
     function chefe() {
       return email() == 'chefe@quadro-pix.firebaseapp.com';
@@ -28,25 +30,55 @@ service cloud.firestore {
     function logado() {
       return chefe() || empresa() != '';
     }
+    // Nome que o app grava como "ator" no histórico (atorAtual em src/app.jsx).
+    function nomeDoAtor() {
+      return chefe() ? 'Chefe' : {
+        'leao': 'Churrascaria Leão do Parque',
+        'pier49': 'Restaurante Pier 49',
+        'centro': 'Padaria Gaúcha Centro',
+        'cassino': 'Padaria Gaúcha Cassino'
+      }.get(empresa(), '');
+    }
+    function doisDigitos(n) {
+      return n < 10 ? '0' + string(n) : string(n);
+    }
+    // Data de hoje (UTC) no formato do toISOString() do app: AAAA-MM-DD.
+    function hojeUtc() {
+      return string(request.time.year()) + '-' + doisDigitos(request.time.month()) + '-' + doisDigitos(request.time.day());
+    }
+
+    // Campos que um estabelecimento pode criar e editar num PIX. Coluna, "feito" (pagoEm)
+    // e arquivamento são só do chefe.
+    function camposDoPix() {
+      return ['chavePix', 'favorecido', 'descricao', 'valor', 'precisaComprovante'];
+    }
 
     match /cards/{id} {
       allow read: if logado();
       // O chefe faz tudo. Cada estabelecimento só cria e edita os PIX da própria
-      // coluna, e não pode mudá-los de coluna (marcar como feito é do chefe).
+      // coluna, e não pode mudá-los de coluna nem arquivá-los.
       allow create: if chefe() || (empresa() != ''
+        && request.resource.data.keys().hasOnly(camposDoPix().concat(['columnId', 'origemId', 'createdAt', 'archived']))
         && request.resource.data.origemId == empresa()
-        && request.resource.data.columnId == empresa());
+        && request.resource.data.columnId == empresa()
+        && request.resource.data.archived == false);
       allow update: if chefe() || (empresa() != ''
         && resource.data.origemId == empresa()
         && resource.data.columnId == empresa()
-        && request.resource.data.origemId == empresa()
-        && request.resource.data.columnId == empresa());
+        && resource.data.get('archived', false) == false
+        && request.resource.data.diff(resource.data).affectedKeys().hasOnly(camposDoPix()));
       allow delete: if chefe();
     }
 
-    // Histórico de atividades: todos registram, só o chefe lê, ninguém apaga.
+    // Histórico de atividades: cada conta registra só em nome dela e com a data de hoje
+    // (não dá para fingir ser o chefe nem empurrar as atividades reais para fora da lista
+    // com datas no futuro). Só o chefe lê; ninguém edita nem apaga.
     match /audit_log/{id} {
-      allow create: if logado();
+      allow create: if logado()
+        && request.resource.data.keys().hasOnly(['acao', 'ator', 'detalhe', 'em'])
+        && request.resource.data.ator == nomeDoAtor()
+        && request.resource.data.em is string
+        && request.resource.data.em.matches(hojeUtc() + 'T[0-9:.]+Z');
       allow read: if chefe();
     }
 

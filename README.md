@@ -28,7 +28,11 @@ Para criar as contas: no console do Firebase, **Authentication > Sign-in method*
 | Padaria Cassino | `cassino@quadro-pix.firebaseapp.com` |
 | Chefe | `chefe@quadro-pix.firebaseapp.com` |
 
-Depois, cole o conteúdo de `firestore.rules` em **Firestore Database > Regras** e publique. As regras só deixam essas contas ler o quadro; cada estabelecimento só mexe na própria coluna, e só o chefe marca como feito, apaga e vê o histórico.
+Depois, cole o conteúdo de `firestore.rules` em **Firestore Database > Regras** e publique. As regras só deixam essas contas ler o quadro; cada estabelecimento só mexe na própria coluna e só nos dados do PIX (chave, favorecido, descrição, valor, comprovante), e só o chefe marca como feito, arquiva, apaga e vê o histórico. No histórico, cada conta só registra em nome dela e com a data do dia.
+
+**Ordem para ligar:** (1) crie as 5 contas, (2) em **Authentication > Settings > User actions** desmarque "Enable create (sign-up)", para ninguém criar conta pela internet, (3) publique o site com login, (4) publique as regras. Se publicar as regras antes do site, o quadro antigo (com PIN) para de funcionar.
+
+Limitação: uma atividade feita sem internet e enviada só no dia seguinte (horário de Greenwich) não entra no histórico.
 
 ## Editando
 
