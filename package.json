@@ -2,6 +2,7 @@
   "name": "quadro-pix",
   "private": true,
   "scripts": {
+    "test": "node --test tests/*.test.mjs",
     "build": "npm run build:js && npm run build:css",
     "build:js": "esbuild src/app.jsx --bundle --minify --target=es2019 --define:process.env.NODE_ENV=\\\"production\\\" --outfile=dist/app.js",
     "build:css": "tailwindcss -i src/styles.css -o dist/styles.css --minify",
