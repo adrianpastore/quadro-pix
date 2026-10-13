@@ -536,9 +536,12 @@ function PixBoard() {
     if (!card || !canEdit(card)) {
       setEditingCardId(null);
       setEditErrors({});
-      setEditNotice("Este PIX foi alterado pelo chefe");
+      setEditNotice("Este PIX foi alterado ou removido e não pode mais ser editado.");
     }
   }, [cards, editingCardId, authUser]);
+
+  // O aviso de edição encerrada vale só para a tela em que apareceu.
+  useEffect(() => setEditNotice(""), [page]);
 
   function atorAtual() {
     if (!session) return "Desconhecido";
@@ -721,7 +724,7 @@ function PixBoard() {
     const card = cards.find((c) => c.id === cardId);
     if (!card || !canEdit(card)) {
       cancelEdit();
-      setEditNotice("Este PIX foi alterado pelo chefe");
+      setEditNotice("Este PIX foi alterado ou removido e não pode mais ser editado.");
       return;
     }
     const { errors, numeric } = validatePix(editDraft, false);

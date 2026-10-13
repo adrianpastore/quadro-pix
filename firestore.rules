@@ -53,6 +53,12 @@ service cloud.firestore {
       return ['chavePix', 'favorecido', 'descricao', 'valor', 'precisaComprovante'];
     }
 
+    // Tipos dos dados do PIX: texto onde o app espera texto (a busca e a edição quebram com outro tipo).
+    function pixValido(d) {
+      return d.chavePix is string && d.favorecido is string && d.descricao is string
+        && d.valor is number && d.valor > 0 && d.precisaComprovante is bool;
+    }
+
     match /cards/{id} {
       allow read: if logado();
       // O chefe faz tudo. Cada estabelecimento só cria e edita os PIX da própria
@@ -61,24 +67,28 @@ service cloud.firestore {
         && request.resource.data.keys().hasOnly(camposDoPix().concat(['columnId', 'origemId', 'createdAt', 'archived']))
         && request.resource.data.origemId == empresa()
         && request.resource.data.columnId == empresa()
-        && request.resource.data.archived == false);
+        && request.resource.data.archived == false
+        && request.resource.data.createdAt is string
+        && pixValido(request.resource.data));
       allow update: if chefe() || (empresa() != ''
         && resource.data.origemId == empresa()
         && resource.data.columnId == empresa()
         && resource.data.get('archived', false) == false
-        && request.resource.data.diff(resource.data).affectedKeys().hasOnly(camposDoPix()));
+        && request.resource.data.diff(resource.data).affectedKeys().hasOnly(camposDoPix())
+        && pixValido(request.resource.data));
       allow delete: if chefe();
     }
 
     // Histórico de atividades: cada conta registra só em nome dela e com a data de hoje
-    // (não dá para fingir ser o chefe nem empurrar as atividades reais para fora da lista
-    // com datas no futuro). Só o chefe lê; ninguém edita nem apaga.
+    // e um horário válido (não dá para fingir ser o chefe nem gravar horários impossíveis que
+    // ficariam no topo da lista). Só o chefe lê; ninguém edita nem apaga.
+    // Limitação: uma conta ainda consegue gravar muitos registros de uma vez pela API.
     match /audit_log/{id} {
       allow create: if logado()
         && request.resource.data.keys().hasOnly(['acao', 'ator', 'detalhe', 'em'])
         && request.resource.data.ator == nomeDoAtor()
         && request.resource.data.em is string
-        && request.resource.data.em.matches(hojeUtc() + 'T[0-9:.]+Z');
+        && request.resource.data.em.matches(hojeUtc() + 'T([01][0-9]|2[0-3]):[0-5][0-9]:[0-5][0-9][.][0-9]{3}Z');
       allow read: if chefe();
     }
 
