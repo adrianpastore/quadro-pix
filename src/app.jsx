@@ -3,6 +3,7 @@ import ReactDOM from "react-dom/client";
 
 const CARDS_COLLECTION = "cards";
 const ACTIVITY_COLLECTION = "audit_log";
+const ACESSOS_COLLECTION = "acessos";
 const SESSION_KEY = "pix-board-session-v1";
 
 const EMPRESAS = [
@@ -84,16 +85,58 @@ const FEITO_COLUMN = {
 };
 
 const COLUMNS = [...EMPRESAS, FEITO_COLUMN];
-// Cada estabelecimento e o chefe entram com uma conta do Firebase Authentication
-// (e-mail e senha). As contas são criadas no console do Firebase com estes e-mails,
-// que não precisam existir de verdade; o firestore.rules usa a mesma lista.
+// Cada estabelecimento, o chefe, o financeiro e o desenvolvedor entram com uma conta do
+// Firebase Authentication (e-mail e senha). As contas são criadas no console do Firebase com
+// estes e-mails, que não precisam existir de verdade; o firestore.rules usa a mesma lista.
 const CHEFE_EMAIL = "chefe@quadro-pix.firebaseapp.com";
+const FINANCEIRO_EMAIL = "financeiro@quadro-pix.firebaseapp.com";
+const DESENVOLVEDOR_EMAIL = "desenvolvedor@quadro-pix.firebaseapp.com";
 
+// Acesso padrão de cada conta fixa. O desenvolvedor pode mudar isso pela tela Usuários
+// (coleção "acessos"); veja resolverAcesso.
 function papelDoEmail(email) {
   const e = (email || "").toLowerCase();
   if (e === CHEFE_EMAIL) return { type: "chefe" };
+  if (e === FINANCEIRO_EMAIL) return { type: "financeiro" };
+  if (e === DESENVOLVEDOR_EMAIL) return { type: "desenvolvedor" };
   const emp = EMPRESAS.find((x) => x.email === e);
   return emp ? { type: "empresa", id: emp.id } : null;
+}
+
+const PAPEIS_GERAIS = ["chefe", "financeiro", "desenvolvedor"];
+
+// Acesso que vale para a conta. O desenvolvedor fixo nunca muda (assim ninguém tranca quem
+// gerencia os acessos). Para as outras contas, o documento em "acessos" vale mais que o padrão:
+// papel "bloqueado" (ou desconhecido) tira o acesso. Mesma lógica de acesso() no firestore.rules.
+function resolverAcesso(email, acesso) {
+  const e = (email || "").toLowerCase();
+  if (e === DESENVOLVEDOR_EMAIL) return { type: "desenvolvedor" };
+  if (acesso && typeof acesso.papel === "string") {
+    if (acesso.papel === "empresa") {
+      return EMPRESAS.some((x) => x.id === acesso.empresaId) ? { type: "empresa", id: acesso.empresaId } : null;
+    }
+    return PAPEIS_GERAIS.includes(acesso.papel) ? { type: acesso.papel } : null;
+  }
+  return papelDoEmail(e);
+}
+
+// Nome mostrado para um acesso (no topo da tela, no histórico e na tela Usuários).
+function nomeDoAcesso(acesso) {
+  if (!acesso) return "Sem acesso";
+  if (acesso.type === "chefe") return "Chefe";
+  if (acesso.type === "financeiro") return "Financeiro";
+  if (acesso.type === "desenvolvedor") return "Desenvolvedor";
+  const emp = EMPRESAS.find((x) => x.id === acesso.id);
+  return emp ? emp.nome : "Sem acesso";
+}
+
+// E-mail usado no login de cada botão da tela de entrada.
+function emailDoBotao(role, emailDigitado) {
+  if (role.type === "chefe") return CHEFE_EMAIL;
+  if (role.type === "financeiro") return FINANCEIRO_EMAIL;
+  if (role.type === "desenvolvedor") return DESENVOLVEDOR_EMAIL;
+  if (role.type === "empresa") return EMPRESAS.find((x) => x.id === role.id).email;
+  return (emailDigitado || "").trim().toLowerCase();
 }
 
 function empresaById(id) {
@@ -178,6 +221,44 @@ function monthKey(iso) {
 function monthLabel(key) {
   const [ano, mes] = key.split("-");
   return `${MESES[Number(mes) - 1]} ${ano}`;
+}
+
+function ddmm(d, comAno) {
+  const base = `${String(d.getDate()).padStart(2, "0")}/${String(d.getMonth() + 1).padStart(2, "0")}`;
+  return comAno ? `${base}/${d.getFullYear()}` : base;
+}
+
+// Semana (segunda a domingo, horário local) em que o PIX foi criado, para agrupar o relatório.
+// Com "mes" (AAAA-MM), a semana é cortada nos limites do mês e numerada a partir da 1ª do mês.
+function semanaInfo(iso, mes) {
+  const d = new Date(iso);
+  const ini = new Date(d.getFullYear(), d.getMonth(), d.getDate() - ((d.getDay() + 6) % 7));
+  const fim = new Date(ini.getFullYear(), ini.getMonth(), ini.getDate() + 6);
+  const key = `${ini.getFullYear()}-${String(ini.getMonth() + 1).padStart(2, "0")}-${String(ini.getDate()).padStart(2, "0")}`;
+  if (!mes) return { key, label: `${ddmm(ini, true)} a ${ddmm(fim, true)}` };
+  const primeiro = new Date(d.getFullYear(), d.getMonth(), 1);
+  const ultimo = new Date(d.getFullYear(), d.getMonth() + 1, 0);
+  const numero = Math.floor((d.getDate() - 1 + ((primeiro.getDay() + 6) % 7)) / 7) + 1;
+  const a = ini < primeiro ? primeiro : ini;
+  const b = fim > ultimo ? ultimo : fim;
+  const periodo = a.getTime() === b.getTime() ? ddmm(a) : `${ddmm(a)} a ${ddmm(b)}`;
+  return { key, label: `Semana ${numero} · ${periodo}` };
+}
+
+// Agrupa uma lista (já ordenada por data) em semanas seguidas, com o subtotal de cada uma.
+function agruparPorSemana(list, mes) {
+  const grupos = [];
+  for (const c of list) {
+    const info = semanaInfo(c.createdAt, mes);
+    let g = grupos[grupos.length - 1];
+    if (!g || g.key !== info.key) {
+      g = { key: info.key, label: info.label, cards: [], total: 0 };
+      grupos.push(g);
+    }
+    g.cards.push(c);
+    g.total += Number(c.valor || 0);
+  }
+  return grupos;
 }
 
 function downloadCsv(list, nomeBase, comData = true) {
@@ -401,15 +482,279 @@ function erroGravacao(error, mensagem) {
     : mensagem;
 }
 
+// Opções do seletor de acesso na tela Usuários ("empresa:<id>" para um estabelecimento).
+const OPCOES_ACESSO = [
+  { value: "chefe", label: "Chefe" },
+  { value: "financeiro", label: "Financeiro" },
+  { value: "desenvolvedor", label: "Desenvolvedor" },
+  ...EMPRESAS.map((e) => ({ value: `empresa:${e.id}`, label: e.nome })),
+  { value: "bloqueado", label: "Sem acesso" },
+];
+
+function valorDoAcesso(acesso) {
+  if (!acesso) return "bloqueado";
+  return acesso.type === "empresa" ? `empresa:${acesso.id}` : acesso.type;
+}
+
+function docDoValor(valor, autorEmail) {
+  const [papel, empresaId] = valor.split(":");
+  return { papel, empresaId: empresaId || "", atualizadoEm: new Date().toISOString(), atualizadoPor: autorEmail };
+}
+
+const CONTAS_FIXAS = [CHEFE_EMAIL, ...EMPRESAS.map((e) => e.email), FINANCEIRO_EMAIL, DESENVOLVEDOR_EMAIL];
+
+// Registro do histórico de atividades, sempre com o e-mail de quem fez (as regras exigem).
+function registroAtividade(acao, ator, detalhe) {
+  return {
+    acao,
+    ator,
+    detalhe,
+    em: new Date().toISOString(),
+    email: ((window.auth.currentUser && window.auth.currentUser.email) || "").toLowerCase(),
+  };
+}
+
+// Tela do desenvolvedor: quem tem acesso ao quadro e o que cada conta pode fazer.
+function UsuariosPage({ ator }) {
+  const [docs, setDocs] = useState({});
+  const [carregando, setCarregando] = useState(true);
+  const [erro, setErro] = useState("");
+  const [escolhas, setEscolhas] = useState({});
+  const [salvando, setSalvando] = useState(null);
+  const [novoEmail, setNovoEmail] = useState("");
+  const [novoAcesso, setNovoAcesso] = useState("financeiro");
+  const [novoErro, setNovoErro] = useState("");
+
+  useEffect(() => {
+    let active = true;
+    const unsub = window.db.collection(ACESSOS_COLLECTION).onSnapshot(
+      (snap) => {
+        if (!active) return;
+        const map = {};
+        snap.docs.forEach((d) => (map[d.id] = d.data()));
+        setDocs(map);
+        setCarregando(false);
+        setErro("");
+      },
+      (err) => {
+        if (!active) return;
+        console.error(err);
+        setErro("Não foi possível carregar os acessos. Confira se as regras novas do Firestore já foram publicadas.");
+        setCarregando(false);
+      }
+    );
+    return () => {
+      active = false;
+      unsub();
+    };
+  }, []);
+
+  const autorEmail = ((window.auth.currentUser && window.auth.currentUser.email) || "").toLowerCase();
+  const emails = [...CONTAS_FIXAS, ...Object.keys(docs).filter((e) => !CONTAS_FIXAS.includes(e)).sort()];
+
+  // A mudança de acesso e o registro em Atividades vão juntos num batch: ou ficam os dois, ou nenhum.
+  async function gravarComRegistro(email, aplicar, detalhe) {
+    const batch = window.db.batch();
+    aplicar(batch, window.db.collection(ACESSOS_COLLECTION).doc(email));
+    batch.set(window.db.collection(ACTIVITY_COLLECTION).doc(), registroAtividade("acesso", ator, detalhe));
+    await batch.commit();
+  }
+
+  async function salvar(email, valor, eNovo) {
+    if (salvando) return false;
+    setSalvando(email);
+    setErro("");
+    try {
+      const novo = resolverAcesso(email, docDoValor(valor, autorEmail));
+      await gravarComRegistro(
+        email,
+        (batch, ref) => batch.set(ref, docDoValor(valor, autorEmail)),
+        eNovo ? `Deu acesso a ${email} como ${nomeDoAcesso(novo)}` : `Mudou o acesso de ${email} para ${nomeDoAcesso(novo)}`
+      );
+      setEscolhas((x) => ({ ...x, [email]: undefined }));
+      return true;
+    } catch (e) {
+      setErro(erroGravacao(e, "Não foi possível salvar agora. Verifique a internet e tente novamente."));
+      return false;
+    } finally {
+      setSalvando(null);
+    }
+  }
+
+  async function voltarAoPadrao(email) {
+    if (salvando) return;
+    setSalvando(email);
+    setErro("");
+    try {
+      const padrao = papelDoEmail(email);
+      await gravarComRegistro(
+        email,
+        (batch, ref) => batch.delete(ref),
+        padrao ? `Voltou ${email} ao acesso padrão (${nomeDoAcesso(padrao)})` : `Removeu o acesso de ${email}`
+      );
+      setEscolhas((x) => ({ ...x, [email]: undefined }));
+    } catch (e) {
+      setErro(erroGravacao(e, "Não foi possível salvar agora. Verifique a internet e tente novamente."));
+    } finally {
+      setSalvando(null);
+    }
+  }
+
+  async function adicionar(ev) {
+    ev.preventDefault();
+    const email = novoEmail.trim().toLowerCase();
+    if (!/^[^\s@/]+@[^\s@/]+\.[^\s@/]+$/.test(email)) {
+      setNovoErro("Digite um e-mail válido.");
+      return;
+    }
+    if (emails.includes(email)) {
+      setNovoErro("Este e-mail já está na lista. Mude o acesso dele abaixo.");
+      return;
+    }
+    if (await salvar(email, novoAcesso, true)) {
+      setNovoEmail("");
+      setNovoErro("");
+    }
+  }
+
+  return (
+    <div className="pb-10 max-w-3xl">
+      <div className="mb-3 text-sm text-neutral-600 bg-white border border-neutral-200 rounded-lg px-3 py-2.5">
+        Aqui você define o que cada e-mail pode fazer no quadro. A mudança vale na hora, até para quem já
+        está com o quadro aberto, e fica registrada em Atividades. A conta em si (e-mail e senha) é criada
+        no console do Firebase, em Authentication &gt; Users.
+      </div>
+
+      {erro && (
+        <p className="mb-3 text-sm text-red-700 bg-red-50 border border-red-200 rounded-md px-3 py-2" role="alert">
+          {erro}
+        </p>
+      )}
+
+      <form onSubmit={adicionar} className="mb-4 bg-white border border-neutral-200 rounded-lg p-3">
+        <p className="text-sm font-medium text-neutral-800 mb-2">Dar acesso a outro e-mail</p>
+        <div className="flex flex-col sm:flex-row gap-2">
+          <input
+            type="email"
+            value={novoEmail}
+            onChange={(e) => {
+              setNovoEmail(e.target.value);
+              setNovoErro("");
+            }}
+            placeholder="nome@exemplo.com"
+            aria-label="E-mail"
+            aria-invalid={novoErro ? "true" : undefined}
+            className={`flex-1 text-base sm:text-sm border rounded-md px-2.5 py-2 sm:py-1.5 ${novoErro ? "border-red-500 bg-red-50" : "border-neutral-300"}`}
+          />
+          <select
+            value={novoAcesso}
+            onChange={(e) => setNovoAcesso(e.target.value)}
+            aria-label="Acesso"
+            className="text-base sm:text-sm border border-neutral-300 rounded-md px-2 py-2 sm:py-1.5 bg-white"
+          >
+            {OPCOES_ACESSO.filter((o) => o.value !== "bloqueado").map((o) => (
+              <option key={o.value} value={o.value}>{o.label}</option>
+            ))}
+          </select>
+          <button
+            type="submit"
+            disabled={!!salvando}
+            className="bg-neutral-900 text-white text-sm rounded-md px-3 py-2 sm:py-1.5 hover:bg-neutral-800 disabled:opacity-60"
+          >
+            Adicionar
+          </button>
+        </div>
+        {novoErro && <p className="text-xs text-red-600 mt-1">{novoErro}</p>}
+      </form>
+
+      <div className="bg-white border border-neutral-200 rounded-lg overflow-hidden">
+        {carregando && (
+          <p className="text-sm text-neutral-500 text-center py-10 flex items-center justify-center gap-2" role="status">
+            <Spinner size={14} /> Carregando acessos…
+          </p>
+        )}
+        {!carregando &&
+          emails.map((email) => {
+            const doc = docs[email];
+            const atual = resolverAcesso(email, doc);
+            // Ninguém muda o próprio acesso aqui (evita se trancar fora sem querer).
+            const fixo = email === DESENVOLVEDOR_EMAIL || email === autorEmail;
+            const escolha = escolhas[email] !== undefined ? escolhas[email] : valorDoAcesso(atual);
+            const mudou = escolha !== valorDoAcesso(atual);
+            const padrao = papelDoEmail(email);
+            return (
+              <div key={email} className="px-3 sm:px-4 py-2.5 border-b border-neutral-100 last:border-0">
+                <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-2">
+                  <div className="min-w-0">
+                    <p className="text-sm font-medium text-neutral-900 break-all">{email}</p>
+                    <p className="text-[11px] text-neutral-400">
+                      {fixo
+                        ? email === DESENVOLVEDOR_EMAIL
+                          ? "Desenvolvedor fixo (não pode ser alterado)"
+                          : `${nomeDoAcesso(atual)} · sua conta (só outro desenvolvedor pode mudar)`
+                        : doc
+                        ? `${nomeDoAcesso(atual)} · alterado ${doc.atualizadoEm ? formatDate(doc.atualizadoEm) : ""}${doc.atualizadoPor ? ` por ${doc.atualizadoPor}` : ""}`
+                        : `${nomeDoAcesso(atual)} · acesso padrão`}
+                    </p>
+                  </div>
+                  {!fixo && (
+                    <div className="flex flex-wrap items-center gap-2 flex-shrink-0">
+                      <select
+                        value={escolha}
+                        onChange={(e) => setEscolhas((x) => ({ ...x, [email]: e.target.value }))}
+                        aria-label={`Acesso de ${email}`}
+                        className="text-base sm:text-sm border border-neutral-300 rounded-md px-2 py-2 sm:py-1.5 bg-white"
+                      >
+                        {OPCOES_ACESSO.map((o) => (
+                          <option key={o.value} value={o.value}>{o.label}</option>
+                        ))}
+                      </select>
+                      {mudou && (
+                        <button
+                          onClick={() => salvar(email, escolha, false)}
+                          disabled={!!salvando}
+                          className="bg-neutral-900 text-white text-sm rounded-md px-3 py-2 sm:py-1.5 hover:bg-neutral-800 disabled:opacity-60 flex items-center gap-1"
+                        >
+                          {salvando === email ? <><Spinner size={13} /> Salvando…</> : "Salvar"}
+                        </button>
+                      )}
+                      {doc && !mudou && (
+                        <button
+                          onClick={() => voltarAoPadrao(email)}
+                          disabled={!!salvando}
+                          className="text-sm text-neutral-600 border border-neutral-300 rounded-md px-3 py-2 sm:py-1.5 hover:bg-neutral-50 disabled:opacity-60"
+                        >
+                          {salvando === email ? "Salvando…" : padrao ? "Voltar ao padrão" : "Remover da lista"}
+                        </button>
+                      )}
+                    </div>
+                  )}
+                </div>
+              </div>
+            );
+          })}
+      </div>
+    </div>
+  );
+}
+
 function PixBoard() {
   // undefined enquanto o Firebase confere se já há alguém logado neste aparelho.
   const [authUser, setAuthUser] = useState(undefined);
-  const session = authUser ? papelDoEmail(authUser.email) : null;
+  // Documento da conta em "acessos": undefined enquanto carrega, null se não houver.
+  const [acessoDoc, setAcessoDoc] = useState(undefined);
+  const session = authUser && acessoDoc !== undefined ? resolverAcesso(authUser.email, acessoDoc) : null;
+  const sessionKey = session ? `${session.type}:${session.id || ""}` : "";
+  const isChefe = !!session && session.type === "chefe";
+  const isDev = !!session && session.type === "desenvolvedor";
+  const podeVerRelatorio = !!session && ["chefe", "financeiro", "desenvolvedor"].includes(session.type);
+  const podeVerAtividades = isChefe || isDev;
   const [cards, setCards] = useState([]);
   const [loading, setLoading] = useState(true);
   const [loadError, setLoadError] = useState("");
   const [selectedRole, setSelectedRole] = useState(null);
   const [senhaInput, setSenhaInput] = useState("");
+  const [emailInput, setEmailInput] = useState("");
   const [entrando, setEntrando] = useState(false);
   const [loginError, setLoginError] = useState("");
   const [openForm, setOpenForm] = useState(null);
@@ -443,15 +788,49 @@ function PixBoard() {
   useEffect(() => {
     // O login fica guardado no aparelho pelo Firebase: quem já entrou não digita de novo.
     try { localStorage.removeItem(SESSION_KEY); } catch (e) {}
-    return window.auth.onAuthStateChanged((u) => {
-      if (u && !papelDoEmail(u.email)) {
-        setLoginError("Esta conta não tem acesso ao quadro.");
-        window.auth.signOut();
-        return;
-      }
-      setAuthUser(u);
-    });
+    return window.auth.onAuthStateChanged((u) => setAuthUser(u));
   }, []);
+
+  // O acesso da conta é acompanhado ao vivo: se o desenvolvedor mudar, vale na hora.
+  useEffect(() => {
+    setAcessoDoc(undefined);
+    if (!authUser) return;
+    let active = true;
+    const email = (authUser.email || "").toLowerCase();
+    if (!email) {
+      setAcessoDoc(null);
+      return;
+    }
+    const unsub = window.db.collection(ACESSOS_COLLECTION).doc(email).onSnapshot(
+      (snap) => {
+        if (active) setAcessoDoc(snap.exists ? snap.data() : null);
+      },
+      (err) => {
+        // Sem leitura (por exemplo, regras antigas ainda publicadas): usa o acesso padrão.
+        // Quem decide de verdade o que cada conta faz são as regras do Firestore.
+        if (!active) return;
+        console.error(err);
+        setAcessoDoc(null);
+      }
+    );
+    return () => {
+      active = false;
+      unsub();
+    };
+  }, [authUser]);
+
+  useEffect(() => {
+    if (authUser && acessoDoc !== undefined && !session) {
+      setLoginError("Esta conta não tem acesso ao quadro.");
+      window.auth.signOut();
+    }
+  }, [authUser, acessoDoc]);
+
+  // Se o acesso mudar com a tela aberta, volta para o quadro (a página atual pode não valer mais).
+  useEffect(() => {
+    setPage("board");
+    setOpenForm(null);
+  }, [sessionKey]);
 
   useEffect(() => {
     if (!session) {
@@ -460,7 +839,7 @@ function PixBoard() {
       setSyncFailed(false);
       setEditingCardId(null);
       setEditNotice("");
-      setLoading(authUser === undefined);
+      setLoading(authUser === undefined || (!!authUser && acessoDoc === undefined));
       return;
     }
     setLoading(true);
@@ -487,7 +866,7 @@ function PixBoard() {
       active = false;
       unsub();
     };
-  }, [authUser]);
+  }, [authUser, sessionKey]);
 
   useEffect(() => {
     const goOnline = () => setOnline(true);
@@ -501,7 +880,7 @@ function PixBoard() {
   }, []);
 
   useEffect(() => {
-    if (!session || session.type !== "chefe") return;
+    if (!podeVerAtividades) return;
     setActivitiesLoading(true);
     setActivitiesError("");
     let active = true;
@@ -528,7 +907,7 @@ function PixBoard() {
       active = false;
       unsub();
     };
-  }, [authUser]);
+  }, [authUser, sessionKey]);
 
   useEffect(() => {
     if (!session || !editingCardId) return;
@@ -538,26 +917,18 @@ function PixBoard() {
       setEditErrors({});
       setEditNotice("Este PIX foi alterado ou removido e não pode mais ser editado.");
     }
-  }, [cards, editingCardId, authUser]);
+  }, [cards, editingCardId, authUser, sessionKey]);
 
   // O aviso de edição encerrada vale só para a tela em que apareceu.
   useEffect(() => setEditNotice(""), [page]);
 
   function atorAtual() {
-    if (!session) return "Desconhecido";
-    if (session.type === "chefe") return "Chefe";
-    const emp = empresaById(session.id);
-    return emp ? emp.nome : "Desconhecido";
+    return session ? nomeDoAcesso(session) : "Desconhecido";
   }
 
   async function logActivity(acao, detalhe) {
     try {
-      await window.db.collection(ACTIVITY_COLLECTION).add({
-        acao,
-        ator: atorAtual(),
-        detalhe,
-        em: new Date().toISOString(),
-      });
+      await window.db.collection(ACTIVITY_COLLECTION).add(registroAtividade(acao, atorAtual(), detalhe));
     } catch (e) {
       console.error("Falha ao registrar atividade", e);
     }
@@ -566,12 +937,17 @@ function PixBoard() {
   function handleSelectRole(role) {
     setSelectedRole(role);
     setSenhaInput("");
+    setEmailInput("");
     setLoginError("");
   }
 
   async function handleLoginSubmit() {
     if (!selectedRole || entrando || !senhaInput) return;
-    const email = selectedRole.type === "chefe" ? CHEFE_EMAIL : empresaById(selectedRole.id).email;
+    const email = emailDoBotao(selectedRole, emailInput);
+    if (!email) {
+      setLoginError("Digite o e-mail da conta.");
+      return;
+    }
     setEntrando(true);
     try {
       await window.auth.signInWithEmailAndPassword(email, senhaInput);
@@ -587,13 +963,14 @@ function PixBoard() {
     window.auth.signOut();
     setSelectedRole(null);
     setSenhaInput("");
+    setEmailInput("");
     setPage("board");
     setMobileCol(null);
   }
 
   function canAddTo(columnId) {
     if (!session) return false;
-    if (session.type === "chefe") return columnId !== "feito";
+    if (session.type === "chefe" || session.type === "financeiro") return columnId !== "feito";
     return session.type === "empresa" && session.id === columnId;
   }
 
@@ -698,6 +1075,8 @@ function PixBoard() {
   function canEdit(card) {
     if (!session || card.archived) return false;
     if (session.type === "chefe") return true;
+    // O financeiro edita qualquer PIX ainda pendente; o estabelecimento, só os pendentes dele.
+    if (session.type === "financeiro") return !!empresaById(card.origemId) && card.columnId === card.origemId;
     return session.type === "empresa" && session.id === card.origemId && card.columnId === card.origemId;
   }
 
@@ -829,6 +1208,8 @@ function PixBoard() {
         return "archive";
       case "zerar":
         return "trash";
+      case "acesso":
+        return "lock";
       default:
         return "file-text";
     }
@@ -876,6 +1257,26 @@ function PixBoard() {
                 <Icon name="lock" size={16} className="text-neutral-300" />
                 <span className="text-white font-medium">Entrar como chefe</span>
               </button>
+              <button
+                onClick={() => handleSelectRole({ type: "financeiro" })}
+                className="flex items-center gap-3 bg-white border border-neutral-300 rounded-lg px-4 py-3 text-left hover:border-neutral-500 transition-colors"
+              >
+                <Icon name="file-text" size={16} className="text-neutral-500" />
+                <span className="text-neutral-800 font-medium">Entrar como financeiro</span>
+              </button>
+              <button
+                onClick={() => handleSelectRole({ type: "desenvolvedor" })}
+                className="flex items-center gap-3 bg-white border border-neutral-300 rounded-lg px-4 py-3 text-left hover:border-neutral-500 transition-colors"
+              >
+                <Icon name="lock" size={16} className="text-neutral-500" />
+                <span className="text-neutral-800 font-medium">Entrar como desenvolvedor</span>
+              </button>
+              <button
+                onClick={() => handleSelectRole({ type: "outro" })}
+                className="text-sm text-neutral-500 underline hover:text-neutral-800 mt-2 py-2"
+              >
+                Entrar com outro e-mail
+              </button>
             </div>
           ) : (
             <form
@@ -886,18 +1287,38 @@ function PixBoard() {
               className="bg-white border border-neutral-200 rounded-lg p-5"
             >
               <p className="text-sm text-neutral-500 mb-3">
-                {selectedRole.type === "chefe" ? "Chefe" : empresaById(selectedRole.id).nome}
+                {selectedRole.type === "outro" ? "Outra conta" : nomeDoAcesso(selectedRole)}
               </p>
-              <input
-                type="email"
-                name="username"
-                autoComplete="username"
-                value={selectedRole.type === "chefe" ? CHEFE_EMAIL : empresaById(selectedRole.id).email}
-                readOnly
-                className="sr-only"
-                tabIndex={-1}
-                aria-label="E-mail da conta"
-              />
+              {selectedRole.type === "outro" ? (
+                <>
+                  <label htmlFor="email" className="block text-sm text-neutral-700 mb-1">E-mail</label>
+                  <input
+                    id="email"
+                    type="email"
+                    name="username"
+                    autoComplete="username"
+                    value={emailInput}
+                    onChange={(ev) => {
+                      setEmailInput(ev.target.value);
+                      setLoginError("");
+                    }}
+                    className="w-full border border-neutral-300 rounded-md px-3 py-2 mb-3 text-base"
+                    placeholder="nome@exemplo.com"
+                    autoFocus
+                  />
+                </>
+              ) : (
+                <input
+                  type="email"
+                  name="username"
+                  autoComplete="username"
+                  value={emailDoBotao(selectedRole)}
+                  readOnly
+                  className="sr-only"
+                  tabIndex={-1}
+                  aria-label="E-mail da conta"
+                />
+              )}
               <label htmlFor="senha" className="block text-sm text-neutral-700 mb-1">Senha</label>
               <input
                 id="senha"
@@ -913,7 +1334,7 @@ function PixBoard() {
                   loginError ? "border-red-500 bg-red-50" : "border-neutral-300"
                 }`}
                 placeholder="Digite a senha"
-                autoFocus
+                autoFocus={selectedRole.type !== "outro"}
               />
               {loginError && <p className="text-sm text-red-600 mb-2">{loginError}</p>}
               <div className="flex gap-2 mt-3">
@@ -945,7 +1366,7 @@ function PixBoard() {
         <div className="min-w-0">
           <h1 className="font-display text-xl sm:text-2xl text-neutral-900">Quadro de PIX</h1>
           <p className="text-sm text-neutral-500 truncate">
-            {session.type === "chefe" ? "Você está como chefe" : `Você está em ${empresaById(session.id).nome}`}
+            {session.type === "empresa" ? `Você está em ${nomeDoAcesso(session)}` : `Você está como ${nomeDoAcesso(session).toLowerCase()}`}
           </p>
         </div>
         <button
@@ -965,7 +1386,7 @@ function PixBoard() {
         >
           <Icon name="grid" size={14} /> Quadro
         </button>
-        {session.type === "chefe" && (
+        {podeVerRelatorio && (
           <button
             onClick={() => setPage("report")}
             className={`flex items-center gap-1.5 text-sm rounded-md px-3 py-2 sm:py-1.5 ${
@@ -975,7 +1396,7 @@ function PixBoard() {
             <Icon name="file-text" size={14} /> Relatório
           </button>
         )}
-        {session.type === "chefe" && (
+        {podeVerAtividades && (
           <button
             onClick={() => setPage("activities")}
             className={`flex items-center gap-1.5 text-sm rounded-md px-3 py-2 sm:py-1.5 ${
@@ -983,6 +1404,16 @@ function PixBoard() {
             }`}
           >
             <Icon name="clock" size={14} /> Atividades
+          </button>
+        )}
+        {isDev && (
+          <button
+            onClick={() => setPage("users")}
+            className={`flex items-center gap-1.5 text-sm rounded-md px-3 py-2 sm:py-1.5 ${
+              page === "users" ? "bg-neutral-900 text-white" : "bg-white border border-neutral-300 text-neutral-600"
+            }`}
+          >
+            <Icon name="lock" size={14} /> Usuários
           </button>
         )}
         {page === "board" && (
@@ -1378,7 +1809,7 @@ function PixBoard() {
         );
       })()}
 
-      {page === "report" && session.type === "chefe" && (
+      {page === "report" && podeVerRelatorio && (
         <div className="pb-20">
           {(() => {
             const relevantEmpresas = EMPRESAS;
@@ -1509,7 +1940,15 @@ function PixBoard() {
                         : `Nenhum PIX em ${monthLabel(selectedMonth)}.`}
                     </p>
                   )}
-                  {relevantCards.map((card) => {
+                  {agruparPorSemana(relevantCards, selectedMonth === "all" ? null : selectedMonth).map((grupo) => (
+                    <section key={grupo.key} aria-label={grupo.label}>
+                      <div className="flex items-center justify-between gap-2 px-3 sm:px-4 py-2 bg-neutral-50 border-y border-neutral-200">
+                        <h3 className="text-xs font-medium text-neutral-700">{grupo.label}</h3>
+                        <p className="text-xs text-neutral-500 whitespace-nowrap">
+                          {grupo.cards.length} PIX · <span className="font-mono-num font-medium text-neutral-800">{formatMoney(grupo.total)}</span>
+                        </p>
+                      </div>
+                  {grupo.cards.map((card) => {
                     const origem = empresaById(card.origemId);
                     const status = statusLabel(card);
                     return (
@@ -1532,6 +1971,8 @@ function PixBoard() {
                       </div>
                     );
                   })}
+                    </section>
+                  ))}
                 </div>
               </>
             );
@@ -1539,7 +1980,9 @@ function PixBoard() {
         </div>
       )}
 
-      {page === "activities" && session.type === "chefe" && (
+      {page === "users" && isDev && <UsuariosPage ator={atorAtual()} />}
+
+      {page === "activities" && podeVerAtividades && (
         <div className="bg-white border border-neutral-200 rounded-lg overflow-hidden pb-4">
           {activitiesLoading && activities.length === 0 && (
             <p className="text-sm text-neutral-500 text-center py-10 flex items-center justify-center gap-2" role="status">
@@ -1563,7 +2006,10 @@ function PixBoard() {
                 <p className="text-sm text-neutral-800">
                   <span className="font-medium">{act.ator}</span> · {act.detalhe}
                 </p>
-                <p className="text-[11px] text-neutral-400 font-mono-num">{formatDate(act.em)}</p>
+                <p className="text-[11px] text-neutral-400 font-mono-num">
+                  {formatDate(act.em)}
+                  {act.email ? ` · ${act.email}` : ""}
+                </p>
               </div>
             </div>
           ))}
