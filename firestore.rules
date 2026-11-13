@@ -4,9 +4,10 @@ rules_version = '2';
 // Este arquivo é a cópia guardada no repositório: o que vale é o que estiver publicado
 // no console do Firebase (Firestore Database > Regras). Cole este texto lá.
 //
-// Só entra quem fez login com uma das contas abaixo (Authentication > Users).
-// Os e-mails precisam ser iguais aos de EMPRESAS e CHEFE_EMAIL em src/app.jsx
-// (sem diferença de maiúsculas, como no app).
+// Só entra quem fez login com uma conta do Authentication (Authentication > Users) e tem
+// um acesso: o padrão das contas fixas abaixo ou o que o desenvolvedor definiu na coleção
+// "acessos" (tela Usuários do app). Os e-mails fixos precisam ser iguais aos de EMPRESAS,
+// CHEFE_EMAIL, FINANCEIRO_EMAIL e DESENVOLVEDOR_EMAIL em src/app.jsx.
 
 service cloud.firestore {
   match /databases/{database}/documents {
@@ -15,29 +16,63 @@ service cloud.firestore {
       return request.auth != null && request.auth.token.email is string
         ? request.auth.token.email.lower() : '';
     }
+    function emailDesenvolvedor() {
+      return 'desenvolvedor@quadro-pix.firebaseapp.com';
+    }
+    function empresasValidas() {
+      return ['leao', 'pier49', 'centro', 'cassino'];
+    }
+    // Acesso padrão das contas fixas (papelDoEmail em src/app.jsx).
+    function acessoPadrao() {
+      return {
+        'chefe@quadro-pix.firebaseapp.com': {'papel': 'chefe', 'empresaId': ''},
+        'financeiro@quadro-pix.firebaseapp.com': {'papel': 'financeiro', 'empresaId': ''},
+        'leao@quadro-pix.firebaseapp.com': {'papel': 'empresa', 'empresaId': 'leao'},
+        'pier49@quadro-pix.firebaseapp.com': {'papel': 'empresa', 'empresaId': 'pier49'},
+        'centro@quadro-pix.firebaseapp.com': {'papel': 'empresa', 'empresaId': 'centro'},
+        'cassino@quadro-pix.firebaseapp.com': {'papel': 'empresa', 'empresaId': 'cassino'}
+      }.get(email(), {'papel': '', 'empresaId': ''});
+    }
+    function caminhoAcesso() {
+      return /databases/$(database)/documents/acessos/$(email());
+    }
+    // Acesso que vale (resolverAcesso em src/app.jsx): o desenvolvedor fixo nunca muda; para
+    // as outras contas, o documento em "acessos" vale mais que o padrão.
+    function acesso() {
+      return email() == emailDesenvolvedor() ? {'papel': 'desenvolvedor', 'empresaId': ''}
+        : (email() != '' && exists(caminhoAcesso()) ? get(caminhoAcesso()).data : acessoPadrao());
+    }
+    function papel() {
+      return acesso().get('papel', '');
+    }
     function chefe() {
-      return email() == 'chefe@quadro-pix.firebaseapp.com';
+      return papel() == 'chefe';
+    }
+    function financeiro() {
+      return papel() == 'financeiro';
+    }
+    function desenvolvedor() {
+      return papel() == 'desenvolvedor';
     }
     // id do estabelecimento da conta logada, ou '' se não for de um estabelecimento
     function empresa() {
-      return {
-        'leao@quadro-pix.firebaseapp.com': 'leao',
-        'pier49@quadro-pix.firebaseapp.com': 'pier49',
-        'centro@quadro-pix.firebaseapp.com': 'centro',
-        'cassino@quadro-pix.firebaseapp.com': 'cassino'
-      }.get(email(), '');
+      return papel() == 'empresa' && acesso().get('empresaId', '') in empresasValidas()
+        ? acesso().get('empresaId', '') : '';
     }
     function logado() {
-      return chefe() || empresa() != '';
+      return chefe() || financeiro() || desenvolvedor() || empresa() != '';
     }
-    // Nome que o app grava como "ator" no histórico (atorAtual em src/app.jsx).
+    // Nome que o app grava como "ator" no histórico (nomeDoAcesso em src/app.jsx).
     function nomeDoAtor() {
-      return chefe() ? 'Chefe' : {
-        'leao': 'Churrascaria Leão do Parque',
-        'pier49': 'Restaurante Pier 49',
-        'centro': 'Padaria Gaúcha Centro',
-        'cassino': 'Padaria Gaúcha Cassino'
-      }.get(empresa(), '');
+      return chefe() ? 'Chefe'
+        : (financeiro() ? 'Financeiro'
+        : (desenvolvedor() ? 'Desenvolvedor'
+        : {
+          'leao': 'Churrascaria Leão do Parque',
+          'pier49': 'Restaurante Pier 49',
+          'centro': 'Padaria Gaúcha Centro',
+          'cassino': 'Padaria Gaúcha Cassino'
+        }.get(empresa(), '')));
     }
     function doisDigitos(n) {
       return n < 10 ? '0' + string(n) : string(n);
@@ -47,8 +82,8 @@ service cloud.firestore {
       return string(request.time.year()) + '-' + doisDigitos(request.time.month()) + '-' + doisDigitos(request.time.day());
     }
 
-    // Campos que um estabelecimento pode criar e editar num PIX. Coluna, "feito" (pagoEm)
-    // e arquivamento são só do chefe.
+    // Campos que o financeiro e os estabelecimentos podem criar e editar num PIX. Coluna,
+    // "feito" (pagoEm) e arquivamento são só do chefe.
     function camposDoPix() {
       return ['chavePix', 'favorecido', 'descricao', 'valor', 'precisaComprovante'];
     }
@@ -59,37 +94,64 @@ service cloud.firestore {
         && d.valor is number && d.valor > 0 && d.precisaComprovante is bool;
     }
 
+    // Estabelecimento em que a conta pode lançar PIX: o financeiro, em qualquer um; o
+    // estabelecimento, só no dele.
+    function podeLancarEm(origemId) {
+      return financeiro() ? origemId in empresasValidas() : (empresa() != '' && origemId == empresa());
+    }
+
     match /cards/{id} {
       allow read: if logado();
-      // O chefe faz tudo. Cada estabelecimento só cria e edita os PIX da própria
-      // coluna, e não pode mudá-los de coluna nem arquivá-los.
-      allow create: if chefe() || (empresa() != ''
+      // O chefe faz tudo. O financeiro e os estabelecimentos criam e editam PIX ainda pendentes
+      // (o financeiro em qualquer coluna, o estabelecimento só na dele), sem mudar de coluna
+      // nem arquivar. O desenvolvedor só vê.
+      allow create: if chefe() || (podeLancarEm(request.resource.data.origemId)
         && request.resource.data.keys().hasOnly(camposDoPix().concat(['columnId', 'origemId', 'createdAt', 'archived']))
-        && request.resource.data.origemId == empresa()
-        && request.resource.data.columnId == empresa()
+        && request.resource.data.columnId == request.resource.data.origemId
         && request.resource.data.archived == false
         && request.resource.data.createdAt is string
         && pixValido(request.resource.data));
-      allow update: if chefe() || (empresa() != ''
-        && resource.data.origemId == empresa()
-        && resource.data.columnId == empresa()
+      allow update: if chefe() || (podeLancarEm(resource.data.origemId)
+        && resource.data.columnId == resource.data.origemId
         && resource.data.get('archived', false) == false
         && request.resource.data.diff(resource.data).affectedKeys().hasOnly(camposDoPix())
         && pixValido(request.resource.data));
       allow delete: if chefe();
     }
 
-    // Histórico de atividades: cada conta registra só em nome dela e com a data de hoje
-    // e um horário válido (não dá para fingir ser o chefe nem gravar horários impossíveis que
-    // ficariam no topo da lista). Só o chefe lê; ninguém edita nem apaga.
+    // Histórico de atividades: cada conta registra só em nome dela, com o próprio e-mail, a data
+    // de hoje e um horário válido (não dá para fingir ser outra conta nem gravar horários
+    // impossíveis que ficariam no topo da lista). Só o chefe e o desenvolvedor leem; ninguém
+    // edita nem apaga.
+    // Numa mudança de acesso, o app grava o acesso e o registro juntos (batch); aqui get() vê o
+    // acesso de antes da mudança, então o "ator" é o papel de quem fez a mudança.
     // Limitação: uma conta ainda consegue gravar muitos registros de uma vez pela API.
     match /audit_log/{id} {
       allow create: if logado()
-        && request.resource.data.keys().hasOnly(['acao', 'ator', 'detalhe', 'em'])
+        && request.resource.data.keys().hasOnly(['acao', 'ator', 'detalhe', 'em', 'email'])
         && request.resource.data.ator == nomeDoAtor()
+        && request.resource.data.get('email', '') == email()
         && request.resource.data.em is string
         && request.resource.data.em.matches(hojeUtc() + 'T([01][0-9]|2[0-3]):[0-5][0-9]:[0-5][0-9][.][0-9]{3}Z');
-      allow read: if chefe();
+      allow read: if chefe() || desenvolvedor();
+    }
+
+    // Acessos (tela Usuários): o id do documento é o e-mail em minúsculas. Cada conta lê o
+    // próprio acesso; só o desenvolvedor vê a lista e muda. O desenvolvedor fixo não entra aqui.
+    match /acessos/{conta} {
+      allow get: if desenvolvedor() || (email() != '' && conta == email());
+      allow list: if desenvolvedor();
+      allow create, update: if desenvolvedor()
+        && conta == conta.lower()
+        && conta != emailDesenvolvedor()
+        && request.resource.data.keys().hasOnly(['papel', 'empresaId', 'atualizadoEm', 'atualizadoPor'])
+        && request.resource.data.papel in ['chefe', 'financeiro', 'desenvolvedor', 'empresa', 'bloqueado']
+        && (request.resource.data.papel == 'empresa'
+          ? request.resource.data.empresaId in empresasValidas()
+          : request.resource.data.empresaId == '')
+        && request.resource.data.atualizadoEm is string
+        && request.resource.data.atualizadoPor == email();
+      allow delete: if desenvolvedor() && conta != emailDesenvolvedor();
     }
 
     // qualquer outro caminho fica fechado
