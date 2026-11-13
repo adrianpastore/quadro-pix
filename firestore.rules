@@ -42,37 +42,30 @@ service cloud.firestore {
       return email() == emailDesenvolvedor() ? {'papel': 'desenvolvedor', 'empresaId': ''}
         : (email() != '' && exists(caminhoAcesso()) ? get(caminhoAcesso()).data : acessoPadrao());
     }
-    function papel() {
-      return acesso().get('papel', '');
+    // Perfil da conta logada: {papel, empresa}. "empresa" é o id do estabelecimento, ou '' se
+    // não for de um. IMPORTANTE: cada regra calcula o perfil uma vez só (perfil() passado como
+    // argumento "f" para as funções abaixo). Chamar acesso() várias vezes estoura o limite de
+    // 1000 expressões por pedido do Firestore e nega a gravação.
+    function perfil() {
+      let a = acesso();
+      let p = a.get('papel', '');
+      let e = a.get('empresaId', '');
+      return {'papel': p, 'empresa': (p == 'empresa' && e in empresasValidas()) ? e : ''};
     }
-    function chefe() {
-      return papel() == 'chefe';
-    }
-    function financeiro() {
-      return papel() == 'financeiro';
-    }
-    function desenvolvedor() {
-      return papel() == 'desenvolvedor';
-    }
-    // id do estabelecimento da conta logada, ou '' se não for de um estabelecimento
-    function empresa() {
-      return papel() == 'empresa' && acesso().get('empresaId', '') in empresasValidas()
-        ? acesso().get('empresaId', '') : '';
-    }
-    function logado() {
-      return chefe() || financeiro() || desenvolvedor() || empresa() != '';
+    function logado(f) {
+      return f.papel in ['chefe', 'financeiro', 'desenvolvedor'] || f.empresa != '';
     }
     // Nome que o app grava como "ator" no histórico (nomeDoAcesso em src/app.jsx).
-    function nomeDoAtor() {
-      return chefe() ? 'Chefe'
-        : (financeiro() ? 'Financeiro'
-        : (desenvolvedor() ? 'Desenvolvedor'
+    function nomeDoAtor(f) {
+      return f.papel == 'chefe' ? 'Chefe'
+        : (f.papel == 'financeiro' ? 'Financeiro'
+        : (f.papel == 'desenvolvedor' ? 'Desenvolvedor'
         : {
           'leao': 'Churrascaria Leão do Parque',
           'pier49': 'Restaurante Pier 49',
           'centro': 'Padaria Gaúcha Centro',
           'cassino': 'Padaria Gaúcha Cassino'
-        }.get(empresa(), '')));
+        }.get(f.empresa, '')));
     }
     function doisDigitos(n) {
       return n < 10 ? '0' + string(n) : string(n);
@@ -96,27 +89,34 @@ service cloud.firestore {
 
     // Estabelecimento em que a conta pode lançar PIX: o financeiro, em qualquer um; o
     // estabelecimento, só no dele.
-    function podeLancarEm(origemId) {
-      return financeiro() ? origemId in empresasValidas() : (empresa() != '' && origemId == empresa());
+    function podeLancarEm(f, origemId) {
+      return f.papel == 'financeiro' ? origemId in empresasValidas() : (f.empresa != '' && origemId == f.empresa);
+    }
+
+    // O chefe faz tudo. O financeiro e os estabelecimentos criam e editam PIX ainda pendentes
+    // (o financeiro em qualquer coluna, o estabelecimento só na dele), sem mudar de coluna
+    // nem arquivar. O desenvolvedor só vê.
+    function podeCriarPix(f, novo) {
+      return f.papel == 'chefe' || (podeLancarEm(f, novo.origemId)
+        && novo.keys().hasOnly(camposDoPix().concat(['columnId', 'origemId', 'createdAt', 'archived']))
+        && novo.columnId == novo.origemId
+        && novo.archived == false
+        && novo.createdAt is string
+        && pixValido(novo));
+    }
+    function podeEditarPix(f, antes, depois) {
+      return f.papel == 'chefe' || (podeLancarEm(f, antes.origemId)
+        && antes.columnId == antes.origemId
+        && antes.get('archived', false) == false
+        && depois.diff(antes).affectedKeys().hasOnly(camposDoPix())
+        && pixValido(depois));
     }
 
     match /cards/{id} {
-      allow read: if logado();
-      // O chefe faz tudo. O financeiro e os estabelecimentos criam e editam PIX ainda pendentes
-      // (o financeiro em qualquer coluna, o estabelecimento só na dele), sem mudar de coluna
-      // nem arquivar. O desenvolvedor só vê.
-      allow create: if chefe() || (podeLancarEm(request.resource.data.origemId)
-        && request.resource.data.keys().hasOnly(camposDoPix().concat(['columnId', 'origemId', 'createdAt', 'archived']))
-        && request.resource.data.columnId == request.resource.data.origemId
-        && request.resource.data.archived == false
-        && request.resource.data.createdAt is string
-        && pixValido(request.resource.data));
-      allow update: if chefe() || (podeLancarEm(resource.data.origemId)
-        && resource.data.columnId == resource.data.origemId
-        && resource.data.get('archived', false) == false
-        && request.resource.data.diff(resource.data).affectedKeys().hasOnly(camposDoPix())
-        && pixValido(request.resource.data));
-      allow delete: if chefe();
+      allow read: if logado(perfil());
+      allow create: if podeCriarPix(perfil(), request.resource.data);
+      allow update: if podeEditarPix(perfil(), resource.data, request.resource.data);
+      allow delete: if perfil().papel == 'chefe';
     }
 
     // Histórico de atividades: cada conta registra só em nome dela, com o próprio e-mail, a data
@@ -126,32 +126,37 @@ service cloud.firestore {
     // Numa mudança de acesso, o app grava o acesso e o registro juntos (batch); aqui get() vê o
     // acesso de antes da mudança, então o "ator" é o papel de quem fez a mudança.
     // Limitação: uma conta ainda consegue gravar muitos registros de uma vez pela API.
+    function podeRegistrar(f, d) {
+      return logado(f)
+        && d.keys().hasOnly(['acao', 'ator', 'detalhe', 'em', 'email'])
+        && d.ator == nomeDoAtor(f)
+        && d.get('email', '') == email()
+        && d.em is string
+        && d.em.matches(hojeUtc() + 'T([01][0-9]|2[0-3]):[0-5][0-9]:[0-5][0-9][.][0-9]{3}Z');
+    }
+
     match /audit_log/{id} {
-      allow create: if logado()
-        && request.resource.data.keys().hasOnly(['acao', 'ator', 'detalhe', 'em', 'email'])
-        && request.resource.data.ator == nomeDoAtor()
-        && request.resource.data.get('email', '') == email()
-        && request.resource.data.em is string
-        && request.resource.data.em.matches(hojeUtc() + 'T([01][0-9]|2[0-3]):[0-5][0-9]:[0-5][0-9][.][0-9]{3}Z');
-      allow read: if chefe() || desenvolvedor();
+      allow create: if podeRegistrar(perfil(), request.resource.data);
+      allow read: if perfil().papel in ['chefe', 'desenvolvedor'];
     }
 
     // Acessos (tela Usuários): o id do documento é o e-mail em minúsculas. Cada conta lê o
     // próprio acesso; só o desenvolvedor vê a lista e muda. O desenvolvedor fixo não entra aqui.
-    match /acessos/{conta} {
-      allow get: if desenvolvedor() || (email() != '' && conta == email());
-      allow list: if desenvolvedor();
-      allow create, update: if desenvolvedor()
-        && conta == conta.lower()
+    function acessoValido(conta, d) {
+      return conta == conta.lower()
         && conta != emailDesenvolvedor()
-        && request.resource.data.keys().hasOnly(['papel', 'empresaId', 'atualizadoEm', 'atualizadoPor'])
-        && request.resource.data.papel in ['chefe', 'financeiro', 'desenvolvedor', 'empresa', 'bloqueado']
-        && (request.resource.data.papel == 'empresa'
-          ? request.resource.data.empresaId in empresasValidas()
-          : request.resource.data.empresaId == '')
-        && request.resource.data.atualizadoEm is string
-        && request.resource.data.atualizadoPor == email();
-      allow delete: if desenvolvedor() && conta != emailDesenvolvedor();
+        && d.keys().hasOnly(['papel', 'empresaId', 'atualizadoEm', 'atualizadoPor'])
+        && d.papel in ['chefe', 'financeiro', 'desenvolvedor', 'empresa', 'bloqueado']
+        && (d.papel == 'empresa' ? d.empresaId in empresasValidas() : d.empresaId == '')
+        && d.atualizadoEm is string
+        && d.atualizadoPor == email();
+    }
+
+    match /acessos/{conta} {
+      allow get: if (email() != '' && conta == email()) || perfil().papel == 'desenvolvedor';
+      allow list: if perfil().papel == 'desenvolvedor';
+      allow create, update: if perfil().papel == 'desenvolvedor' && acessoValido(conta, request.resource.data);
+      allow delete: if perfil().papel == 'desenvolvedor' && conta != emailDesenvolvedor();
     }
 
     // qualquer outro caminho fica fechado
