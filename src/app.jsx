@@ -774,6 +774,8 @@ function PixBoard() {
   const [searchQuery, setSearchQuery] = useState("");
   // "current" = mês atual, "all" = todos os meses, ou "AAAA-MM" de um mês arquivado.
   const [reportMonth, setReportMonth] = useState("current");
+  // Estabelecimento escolhido ao clicar no cartão dele no relatório (null = todos).
+  const [reportEmpresa, setReportEmpresa] = useState(null);
   const [activities, setActivities] = useState([]);
   // No celular o quadro mostra uma coluna por vez, escolhida pelas abas.
   const [mobileCol, setMobileCol] = useState(null);
@@ -1821,11 +1823,17 @@ function PixBoard() {
               .filter((k) => k < currentMonth)
               .sort()
               .reverse();
-            const relevantCards = empresaCards
+            // PIX do período e da busca, de todos os estabelecimentos (base dos cartões de cima).
+            const periodCards = empresaCards
               .filter((c) => selectedMonth === "all" || monthKey(c.createdAt) === selectedMonth)
               .filter(matchesSearch)
               .sort((a, b) => new Date(b.createdAt) - new Date(a.createdAt));
-            const grandTotal = relevantCards.reduce((sum, c) => sum + Number(c.valor || 0), 0);
+            const empresaFiltro = reportEmpresa ? empresaById(reportEmpresa) : null;
+            // Lista e exportação: só do estabelecimento escolhido, se houver.
+            const relevantCards = empresaFiltro ? periodCards.filter((c) => c.origemId === empresaFiltro.id) : periodCards;
+            const grandTotal = periodCards.reduce((sum, c) => sum + Number(c.valor || 0), 0);
+            const temFiltro = !!empresaFiltro || !!searchQuery.trim();
+            const nomeCsv = `relatorio-pix-${selectedMonth === "all" ? "todos" : selectedMonth}${empresaFiltro ? `-${empresaFiltro.id}` : ""}`;
 
             function statusLabel(card) {
               if (card.archived) return { text: "Arquivado", className: "bg-neutral-200 text-neutral-600" };
@@ -1876,24 +1884,33 @@ function PixBoard() {
                     </button>
                   </div>
                   <button
-                    onClick={() =>
-                      selectedMonth === "all"
-                        ? downloadCsv(relevantCards, "relatorio-pix-todos")
-                        : downloadCsv(relevantCards, `relatorio-pix-${selectedMonth}`, false)
-                    }
+                    onClick={() => downloadCsv(relevantCards, nomeCsv, selectedMonth === "all")}
                     disabled={relevantCards.length === 0}
                     className="flex items-center gap-1.5 text-xs rounded-md px-2.5 py-2 sm:py-1.5 border bg-white text-neutral-700 border-neutral-300 hover:bg-neutral-50 disabled:opacity-40"
                   >
                     <Icon name="download" size={13} /> Exportar CSV
                   </button>
-                  <div className="relative ml-auto w-full sm:w-64">
-                    <Icon name="search" size={14} className="absolute left-2.5 top-1/2 -translate-y-1/2 text-neutral-400" />
-                    <input
-                      value={searchQuery}
-                      onChange={(e) => setSearchQuery(e.target.value)}
-                      placeholder="Buscar favorecido ou chave PIX"
-                      className="w-full text-base sm:text-sm border border-neutral-300 rounded-md pl-8 pr-2.5 py-2 sm:py-1.5 bg-white"
-                    />
+                  <div className="flex items-center gap-2 ml-auto w-full sm:w-auto">
+                    {temFiltro && (
+                      <button
+                        onClick={() => {
+                          setReportEmpresa(null);
+                          setSearchQuery("");
+                        }}
+                        className="flex-shrink-0 flex items-center gap-1 text-xs rounded-md px-2.5 py-2 sm:py-1.5 border bg-white text-neutral-700 border-neutral-300 hover:bg-neutral-50 whitespace-nowrap"
+                      >
+                        <Icon name="x" size={13} /> Limpar filtros
+                      </button>
+                    )}
+                    <div className="relative flex-1 sm:flex-none sm:w-64">
+                      <Icon name="search" size={14} className="absolute left-2.5 top-1/2 -translate-y-1/2 text-neutral-400" />
+                      <input
+                        value={searchQuery}
+                        onChange={(e) => setSearchQuery(e.target.value)}
+                        placeholder="Buscar favorecido ou chave PIX"
+                        className="w-full text-base sm:text-sm border border-neutral-300 rounded-md pl-8 pr-2.5 py-2 sm:py-1.5 bg-white"
+                      />
+                    </div>
                   </div>
                 </div>
 
@@ -1908,17 +1925,29 @@ function PixBoard() {
 
                 <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-5 gap-2 mb-4">
                   {relevantEmpresas.map((emp) => {
-                    const empCards = relevantCards.filter((c) => c.origemId === emp.id);
+                    const empCards = periodCards.filter((c) => c.origemId === emp.id);
                     const empTotal = empCards.reduce((sum, c) => sum + Number(c.valor || 0), 0);
+                    const ativo = reportEmpresa === emp.id;
                     return (
-                      <div key={emp.id} className="bg-white border border-neutral-200 rounded-lg p-3">
+                      <button
+                        key={emp.id}
+                        type="button"
+                        onClick={() => setReportEmpresa(ativo ? null : emp.id)}
+                        aria-pressed={ativo}
+                        title={ativo ? "Mostrar todos os estabelecimentos" : `Mostrar só ${emp.nome}`}
+                        className={`text-left bg-white border rounded-lg p-3 transition-colors ${
+                          ativo
+                            ? "border-neutral-900 ring-1 ring-neutral-900"
+                            : `border-neutral-200 hover:border-neutral-400 ${empresaFiltro ? "opacity-50 hover:opacity-100" : ""}`
+                        }`}
+                      >
                         <div className="flex items-center gap-1.5 mb-1">
                           <span className={`w-2 h-2 rounded-full ${emp.classes.dot}`} />
                           <p className="text-xs text-neutral-500 leading-tight">{emp.nome}</p>
                         </div>
                         <p className="font-mono-num text-base sm:text-lg font-medium text-neutral-900 break-all">{formatMoney(empTotal)}</p>
                         <p className="text-[11px] text-neutral-400">{empCards.length} PIX</p>
-                      </div>
+                      </button>
                     );
                   })}
                   <div className="col-span-2 sm:col-span-1 bg-neutral-900 rounded-lg p-3">
@@ -1935,6 +1964,8 @@ function PixBoard() {
                         ? "Não foi possível carregar os PIX."
                         : searchQuery.trim()
                         ? "Nenhum PIX encontrado para essa busca."
+                        : empresaFiltro
+                        ? `Nenhum PIX de ${empresaFiltro.nome} neste período.`
                         : selectedMonth === "all"
                         ? "Nenhum PIX registrado ainda."
                         : `Nenhum PIX em ${monthLabel(selectedMonth)}.`}
